@@ -69,13 +69,15 @@ android {
     signingConfigs {
         release {
             // read sign from local.properties
-            Properties pro = new Properties()
-            InputStream input = project.rootProject.file("local.properties").newDataInputStream()
-            pro.load(input)
-            storeFile file(pro.getProperty("KEY_PATH"))
-            storePassword pro.getProperty("KEY_PASSWORD")
-            keyAlias pro.getProperty("ALIAS_NAME")
-            keyPassword pro.getProperty("ALIAS_PASSWORD")
+            def localPropertiesFile = project.rootProject.file("local.properties")
+            if (localPropertiesFile.exists()) {
+                Properties pro = new Properties()
+                pro.load(localPropertiesFile.newDataInputStream())
+                storeFile file(pro.getProperty("KEY_PATH"))
+                storePassword pro.getProperty("KEY_PASSWORD")
+                keyAlias pro.getProperty("ALIAS_NAME")
+                keyPassword pro.getProperty("ALIAS_PASSWORD")
+            }
         }
     }
 
@@ -182,6 +184,9 @@ dependencies {
     // Code Editor
     implementation(libs.bundles.codeEditor)
     implementation(libs.bundles.network)
+
+    // WebDAV 支持库
+    implementation 'com.github.thegrizzlylabs:sardine-android:v0.8'
 
     implementation(libs.bundles.room)
     ksp(libs.roomCompiler)

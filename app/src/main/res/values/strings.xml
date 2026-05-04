@@ -388,7 +388,6 @@
     <string name="backup_restore">备份与恢复</string>
     <string name="backup">备份</string>
     <string name="preference_settings">偏好设置</string>
-    <string name="restart">重启</string>
     <string name="restore_finished">恢复已完成</string>
     <string name="restore_restart_msg">偏好设置需要重启程序才可生效</string>
     <string name="restore">恢复</string>
@@ -505,4 +504,134 @@
     <string name="switch_tag">切换标签</string>
     <string name="get_tag_name_failed">获取标签名失败</string>
     <string name="text_processor_init_failed">文本处理器在初始化阶段出现错误，无法继续执行。可能的原因：开启多语音但未指定配置、朗读规则</string>
+
+    <!-- 保活服务相关 -->
+    <string name="keep_alive_service">保活服务</string>
+    <string name="keep_alive_service_desc">用于保持应用在后台运行</string>
+    <string name="keep_alive_notification_title">TTS Server 保活中</string>
+    <string name="keep_alive_notification_text">点击打开应用</string>
+    <string name="network_keep_alive_started">网络保活已启动</string>
+    <string name="stop">停止</string>
+    <string name="restart">重启</string>
+
+    <!-- 无障碍服务描述 -->
+    <string name="keep_alive_accessibility_desc">TTS Server 后台保活服务，用于保持应用在后台运行</string>
+
+    <!-- 保活设置 -->
+    <string name="keep_alive_settings">后台保活设置</string>
+    <string name="keep_alive_settings_desc">防止应用在后台被系统杀死</string>
+    <string name="keep_alive_enabled">启用保活</string>
+    <string name="keep_alive_enabled_desc">启动前台服务和保活机制</string>
+    <string name="auto_start_enabled">开机自启</string>
+    <string name="auto_start_enabled_desc">设备重启后自动启动服务</string>
+
+    <!-- 无障碍保活 -->
+    <string name="accessibility_keep_alive">无障碍保活</string>
+    <string name="accessibility_keep_alive_desc">利用无障碍服务的高系统优先级保活，需要用户手动授权</string>
+    <string name="accessibility_keep_alive_enabled">无障碍保活已启用</string>
+    <string name="accessibility_keep_alive_disabled">无障碍保活未启用</string>
+    <string name="open_accessibility_settings">打开无障碍设置</string>
+
+    <!-- 通知保活 -->
+    <string name="notification_keep_alive">通知监听保活</string>
+    <string name="notification_keep_alive_desc">利用通知监听服务的系统优先级保活，需要用户手动授权</string>
+    <string name="notification_keep_alive_enabled">通知监听保活已启用</string>
+    <string name="notification_keep_alive_disabled">通知监听保活未启用</string>
+    <string name="open_notification_settings">打开通知监听设置</string>
+
+    <!-- 定时唤醒保活 -->
+    <string name="alarm_keep_alive">定时唤醒保活</string>
+    <string name="alarm_keep_alive_desc">使用闹钟定时唤醒（间隔1分钟），需要精确闹钟权限</string>
+    <string name="alarm_keep_alive_enabled">定时唤醒已启用</string>
+    <string name="alarm_keep_alive_disabled">定时唤醒未启用</string>
+    <string name="exact_alarm_permission_required">需要精确闹钟权限</string>
+    <string name="request_exact_alarm_permission">请求权限</string>
+
+    <!-- 网络保活 -->
+    <string name="network_keep_alive">网络保活</string>
+    <string name="network_keep_alive_desc">保持网络连接活跃，防止被系统清理</string>
+    <string name="network_keep_alive_enabled">网络保活已启用</string>
+    <string name="network_keep_alive_disabled">网络保活未启用</string>
+
+    <!-- 像素保活 -->
+    <string name="pixel_keep_alive">像素保活</string>
+    <string name="pixel_keep_alive_desc">使用1像素悬浮窗口保活</string>
+    <string name="pixel_keep_alive_enabled">像素保活已启用</string>
+
+    <!-- 帮助信息 -->
+    <string name="keep_alive_help_title">保活帮助</string>
+    <string name="keep_alive_help_message">启用保活服务后，应用将在后台保持运行。但系统可能会在电量优化或后台管理中杀死应用。请将应用加入电池优化白名单和厂商后台白名单以获得最佳效果。</string>
+    <string name="navigate_back">返回</string>
+
+    <!-- 批量标签 -->
+    <string name="batch_assign_tags">批量分配标签</string>
+    <string name="clear">清除</string>
+    <string name="select_all">全选</string>
+    <string name="selected_count">已选择 %d 项</string>
+    <string name="no_tag">暂无标签</string>
+    <string name="please_select_voice">请先选择朗读声音</string>
+    <string name="tag_rule_inconsistent">标签规则不一致</string>
+    <string name="no_tags_in_rule">当前规则没有标签</string>
+    <string name="start_tag">起始标签</string>
+    <string name="assign_in_order">按顺序分配</string>
+    <string name="clear_tags">清除所有标签</string>
+    <string name="overlay_permission_required">需要悬浮窗权限</string>
+    <string name="request_overlay_permission">请求悬浮窗权限</string>
+
+    <!-- 开机自启 -->
+    <string name="auto_start_settings">自启动设置</string>
+    <string name="open_auto_start_settings">打开自启动设置</string>
+
+    <!-- 重启 -->
+    <string name="restart_app">重启应用</string>
+    <string name="restart_app_desc">完全重启应用进程</string>
+
+    <!-- 电池白名单 -->
+    <string name="open_manufacturer_settings">打开厂商后台设置</string>
+    <string name="manufacturer_settings_desc">跳转到各厂商后台管理页面，将应用加入白名单以获得更好的保活效果</string>
+    <string name="open_battery_optimization">打开电池优化设置</string>
+
+    <!-- URL快捷恢复 -->
+    <string name="url_restore_confirm_title">快捷恢复备份</string>
+    <string name="url_restore_confirm_message">确定要恢复 WebDAV 上的第 %1$d 个备份文件吗？\n\n文件名：%2$s\n\n此操作将覆盖当前所有配置！</string>
+    <string name="url_restore_index_out_of_range">序号 %1$d 超出范围！当前共有 %2$d 个备份文件</string>
+
+    <!-- 备份恢复 -->
+    <string name="restarting">正在重启…</string>
+    <string name="config_webdav_first">请先配置 WebDAV</string>
+    <string name="backup_to_webdav">备份到 WebDAV</string>
+    <string name="backup_uploaded_success">备份已上传到 WebDAV</string>
+    <string name="restore_from_url_net">从网络 URL 恢复</string>
+    <string name="restore_from_webdav">从 WebDAV 恢复</string>
+    <string name="webdav_settings">WebDAV 设置</string>
+    <string name="not_configured">未配置</string>
+    <string name="empty_folder">文件夹为空</string>
+
+    <!-- WebDAV 配置 -->
+    <string name="account">账号</string>
+    <string name="password">密码</string>
+    <string name="backup_folder">备份文件夹</string>
+    <string name="connection_success">连接成功</string>
+    <string name="save_and_test">保存并测试</string>
+    <string name="select_cloud_backup">选择云端备份</string>
+
+    <!-- 保活设置完整版 -->
+    <string name="manufacturer_whitelist">厂商后台白名单</string>
+    <string name="manufacturer_whitelist_summary">跳转到各厂商后台管理页面，将应用加入白名单</string>
+    <string name="enable_keep_alive">启用保活</string>
+    <string name="keep_alive_merged_with_forwarder">保活通知与转发器通知合并</string>
+    <string name="enable_keep_alive_summary">启动前台服务和保活机制，合并转发器通知</string>
+    <string name="keep_alive_service_title">保活服务</string>
+    <string name="enable_auto_start">开机自启</string>
+    <string name="enable_auto_start_summary">设备重启后自动启动服务</string>
+    <string name="advanced_keep_alive">高级保活</string>
+    <string name="keep_alive_help_summary">查看保活帮助信息</string>
+    <string name="manufacturer_whitelist_title">厂商后台白名单</string>
+    <string name="manufacturer_whitelist_message">跳转到各厂商后台管理页面，将应用加入白名单以获得更好的保活效果</string>
+    <string name="ok">确定</string>
+    <string name="click_to_enable">点击启用</string>
+    <string name="alarm_keep_alive_summary">使用闹钟定时唤醒（间隔1分钟）</string>
+    <string name="pixel_keep_alive_summary">使用1像素悬浮窗保活，息屏显示亮屏隐藏</string>
+    <string name="network_keep_alive_summary">使用息屏音频保活</string>
+
 </resources>

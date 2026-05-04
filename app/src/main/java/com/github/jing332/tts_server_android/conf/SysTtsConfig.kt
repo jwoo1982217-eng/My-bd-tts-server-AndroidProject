@@ -120,4 +120,42 @@ object SysTtsConfig {
         set(value) {
             SystemTtsConfig.isStreamPlayModeEnabled.value = value
         }
+
+    // ========== 后台保活配置 ==========
+
+    var isKeepAliveEnabled: Boolean
+        get() = SystemTtsConfig.isKeepAliveEnabled.value
+        set(value) {
+            SystemTtsConfig.isKeepAliveEnabled.value = value
+        }
+
+    var isAccessibilityKeepAliveEnabled: Boolean
+        get() = SystemTtsConfig.isAccessibilityKeepAliveEnabled.value
+        set(value) {
+            SystemTtsConfig.isAccessibilityKeepAliveEnabled.value = value
+        }
+
+    var isNotificationKeepAliveEnabled: Boolean
+        get() = SystemTtsConfig.isNotificationKeepAliveEnabled.value
+        set(value) {
+            SystemTtsConfig.isNotificationKeepAliveEnabled.value = value
+        }
+
+    var isAlarmKeepAliveEnabled: Boolean
+        get() = SystemTtsConfig.isAlarmKeepAliveEnabled.value
+        set(value) {
+            SystemTtsConfig.isAlarmKeepAliveEnabled.value = value
+        }
+
+    var isAutoStartEnabled: Boolean
+        get() = SystemTtsConfig.isAutoStartEnabled.value
+        set(value) {
+            SystemTtsConfig.isAutoStartEnabled.value = value
+        }
+
+    var isPixelKeepAliveEnabled: Boolean
+        get() = SystemTtsConfig.isPixelKeepAliveEnabled.value
+        set(value) {
+            SystemTtsConfig.isPixelKeepAliveEnabled.value = value
+        }
 }

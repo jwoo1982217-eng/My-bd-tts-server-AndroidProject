@@ -152,4 +152,48 @@ object SystemTtsConfig {
         initialValue = false
     )
 
+    // ========== 后台保活配置 ==========
+
+    val isKeepAliveEnabled = mutableDataSaverStateOf(
+        dataSaverInterface = dataSaverPref,
+        key = "isKeepAliveEnabled",
+        initialValue = false
+    )
+
+    val isAccessibilityKeepAliveEnabled = mutableDataSaverStateOf(
+        dataSaverInterface = dataSaverPref,
+        key = "isAccessibilityKeepAliveEnabled",
+        initialValue = false
+    )
+
+    val isNotificationKeepAliveEnabled = mutableDataSaverStateOf(
+        dataSaverInterface = dataSaverPref,
+        key = "isNotificationKeepAliveEnabled",
+        initialValue = false
+    )
+
+    val isAlarmKeepAliveEnabled = mutableDataSaverStateOf(
+        dataSaverInterface = dataSaverPref,
+        key = "isAlarmKeepAliveEnabled",
+        initialValue = false
+    )
+
+    val isAutoStartEnabled = mutableDataSaverStateOf(
+        dataSaverInterface = dataSaverPref,
+        key = "isAutoStartEnabled",
+        initialValue = false
+    )
+
+    val isPixelKeepAliveEnabled = mutableDataSaverStateOf(
+        dataSaverInterface = dataSaverPref,
+        key = "isPixelKeepAliveEnabled",
+        initialValue = false
+    )
+
+    val isNetworkKeepAliveEnabled = mutableDataSaverStateOf(
+        dataSaverInterface = dataSaverPref,
+        key = "isNetworkKeepAliveEnabled",
+        initialValue = false
+    )
+
 }

@@ -58,6 +58,16 @@
             android:name=".compose.backup.BackupRestoreActivity"
             android:exported="true"
             android:label="@string/backup_restore">
+            <!-- URL快捷恢复: app://backup/restore/3 或 ttsrv://backup/restore/3 -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data android:scheme="app" android:host="backup" />
+                <data android:scheme="ttsrv" />
+            </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
 
@@ -230,6 +240,46 @@
             android:exported="true"
             android:foregroundServiceType="mediaPlayback"
             tools:ignore="ExportedService,Instantiatable" />
+
+        <!-- 保活服务 -->
+        <service
+            android:name=".service.keepalive.KeepAliveService"
+            android:exported="false" />
+
+        <service
+            android:name=".service.keepalive.KeepAliveJobService"
+            android:exported="false" />
+
+        <service
+            android:name=".service.keepalive.NetworkKeepAliveService"
+            android:exported="false" />
+
+        <service
+            android:name=".service.keepalive.PixelKeepAliveService"
+            android:exported="false" />
+
+        <service
+            android:name=".service.keepalive.AccessibilityKeepAliveService"
+            android:exported="false" />
+
+        <service
+            android:name=".service.keepalive.NotificationKeepAliveService"
+            android:exported="false" />
+
+        <!-- 保活广播接收器 -->
+        <receiver
+            android:name=".service.keepalive.AlarmKeepAliveReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".service.keepalive.BootCompleteReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.REBOOT" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
 
         <provider
             android:name="androidx.core.content.FileProvider"

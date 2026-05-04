@@ -117,4 +117,29 @@ object AppConfig {
         initialValue = 0
     )
 
+    // ========== WebDAV 备份配置 ==========
+    val webDavUrl = mutableDataSaverStateOf(
+        dataSaverInterface = dataSaverPref,
+        key = "webDavUrl",
+        initialValue = ""
+    )
+
+    val webDavUser = mutableDataSaverStateOf(
+        dataSaverInterface = dataSaverPref,
+        key = "webDavUser",
+        initialValue = ""
+    )
+
+    val webDavPass = mutableDataSaverStateOf(
+        dataSaverInterface = dataSaverPref,
+        key = "webDavPass",
+        initialValue = ""
+    )
+
+    val webDavPath = mutableDataSaverStateOf(
+        dataSaverInterface = dataSaverPref,
+        key = "webDavPath",
+        initialValue = "/TTS备份"
+    )
+
 }
