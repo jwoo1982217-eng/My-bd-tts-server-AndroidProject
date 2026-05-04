@@ -1,6 +1,5 @@
 package com.github.jing332.tts_server_android.compose.systts.list.ui
 
-import com.github.jing332.tts_server_android.compose.systts.list.avatar.resolveVoiceAvatarUri
 import android.util.Log
 import android.widget.LinearLayout
 import androidx.compose.animation.animateContentSize
@@ -222,43 +221,14 @@ class PluginTtsUI : IConfigUI() {
                 }
 
                 if (sampleRate != null && isNeedDecode != null) {
-                    val currentVoiceItem = realVm.voices.firstOrNull { it.id == tts.voice }
-
-                    val saveVoiceName = currentVoiceItem?.name
-                        ?: tts.data["voiceName"]
-                        ?: systts.displayName.orEmpty()
-
-                    val saveAvatarUrl = resolveVoiceAvatarUri(
-                        packageName = context.packageName,
-                        voiceName = saveVoiceName,
-                        voiceId = tts.voice,
-                        pluginIcon = currentVoiceItem?.icon
-                            ?: tts.data["avatarUrl"]
-                            ?: tts.data["icon"]
-                    )
-
-                    val newData = tts.data.toMutableMap().apply {
-                        if (saveVoiceName.isNotBlank()) {
-                            put("voiceName", saveVoiceName)
-                        }
-
-                        if (saveAvatarUrl.isNotBlank()) {
-                            put("avatarUrl", saveAvatarUrl)
-                            put("icon", saveAvatarUrl)
-                        }
-                    }.toMap()
-
                     onSysttsChange(
                         systts.copy(
                             displayName = if (systts.displayName.isNullOrBlank()) {
-                                displayName.ifBlank { saveVoiceName }
+                                displayName
                             } else {
                                 systts.displayName
                             },
                             config = (systts.config as TtsConfigurationDTO).copy(
-                                source = tts.copy(
-                                    data = newData
-                                ),
                                 audioFormat = BasicAudioFormat(
                                     sampleRate = sampleRate,
                                     isNeedDecode = isNeedDecode
@@ -382,45 +352,22 @@ class PluginTtsUI : IConfigUI() {
                                 allowVoiceSpinnerWriteBack = true
                             }
 
-                            val savedVoiceId = tts.voice
-                            val savedDisplayName = systts.displayName.orEmpty()
-                            val savedVoiceName = savedDisplayName.ifBlank {
-                                tts.data["voiceName"]
-                                    ?: realVm.voices.firstOrNull { it.id == savedVoiceId }?.name
-                                    ?: savedVoiceId
-                            }
-
-                            val voiceValues = mutableListOf<String>().apply {
-                                if (savedVoiceId.isNotBlank()) add(savedVoiceId)
+                            val voiceValues = buildList {
+                                if (tts.voice.isNotBlank()) add(tts.voice)
                                 addAll(realVm.voices.map { it.id })
                             }.distinct()
 
                             val voiceEntries = voiceValues.map { voiceId ->
-                                if (voiceId == savedVoiceId) {
-                                    savedVoiceName
-                                } else {
-                                    realVm.voices.firstOrNull { it.id == voiceId }?.name
-                                        ?: voiceId
-                                }
+                                realVm.voices.firstOrNull { it.id == voiceId }?.name
+                                    ?: tts.data["voiceName"]
+                                    ?: systts.displayName.orEmpty()
+                                    ?: voiceId
                             }
 
-                            val voiceIcons = voiceValues.mapIndexed { index, voiceId ->
-                                val voiceNameForAvatar = voiceEntries.getOrNull(index).orEmpty()
-                                val pluginIcon =
-                                    if (voiceId == savedVoiceId) {
-                                        tts.data["avatarUrl"]
-                                            ?: tts.data["icon"]
-                                            ?: realVm.voices.firstOrNull { it.id == voiceId }?.icon
-                                    } else {
-                                        realVm.voices.firstOrNull { it.id == voiceId }?.icon
-                                    }
-
-                                resolveVoiceAvatarUri(
-                                    packageName = context.packageName,
-                                    voiceName = voiceNameForAvatar,
-                                    voiceId = voiceId,
-                                    pluginIcon = pluginIcon
-                                )
+                            val voiceIcons = voiceValues.map { voiceId ->
+                                realVm.voices.firstOrNull { it.id == voiceId }?.icon
+                                    ?: tts.data["avatarUrl"]
+                                    ?: ""
                             }
 
                             AppSpinner(
@@ -428,7 +375,7 @@ class PluginTtsUI : IConfigUI() {
                                     .fillMaxWidth()
                                     .padding(top = 4.dp),
                                 labelText = stringResource(R.string.label_voice),
-                                value = savedVoiceId,
+                                value = tts.voice,
                                 values = voiceValues,
                                 entries = voiceEntries,
                                 icons = voiceIcons,
@@ -444,20 +391,21 @@ class PluginTtsUI : IConfigUI() {
 
                                     val selectedVoiceItem = realVm.voices.firstOrNull { it.id == selectedVoice }
                                     val selectedName = selectedVoiceItem?.name ?: name.toString()
+                                    val selectedIcon = selectedVoiceItem?.icon.orEmpty()
 
-                                    val selectedAvatar = resolveVoiceAvatarUri(
-                                        packageName = context.packageName,
-                                        voiceName = selectedName,
-                                        voiceId = selectedVoice,
-                                        pluginIcon = selectedVoiceItem?.icon
-                                    )
-
-                                    val lastName = savedVoiceName
+                                    val lastName = realVm.voices.find { it.id == tts.voice }?.name
+                                        ?: tts.data["voiceName"]
+                                        ?: ""
 
                                     val newData = tts.data.toMutableMap().apply {
                                         put("voiceName", selectedName)
-                                        put("avatarUrl", selectedAvatar)
-                                        put("icon", selectedAvatar)
+                                        if (selectedIcon.isNotBlank()) {
+                                            put("avatarUrl", selectedIcon)
+                                            put("icon", selectedIcon)
+                                        } else {
+                                            remove("avatarUrl")
+                                            remove("icon")
+                                        }
                                     }.toMap()
 
                                     onSysttsChange(

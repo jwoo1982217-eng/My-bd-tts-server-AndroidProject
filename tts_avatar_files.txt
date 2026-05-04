@@ -1,0 +1,15 @@
+/storage/emulated/0/TTSvoices/备份/tts_avatar_pack_v3_exact_preview/01_女童_avatar.png
+/storage/emulated/0/TTSvoices/备份/tts_avatar_pack_v3_exact_preview/02_男童_avatar.png
+/storage/emulated/0/TTSvoices/备份/tts_avatar_pack_v3_exact_preview/03_少女_avatar.png
+/storage/emulated/0/TTSvoices/备份/tts_avatar_pack_v3_exact_preview/04_少年_avatar.png
+/storage/emulated/0/TTSvoices/备份/tts_avatar_pack_v3_exact_preview/05_男青年_avatar.png
+/storage/emulated/0/TTSvoices/备份/tts_avatar_pack_v3_exact_preview/06_女青年_avatar.png
+/storage/emulated/0/TTSvoices/备份/tts_avatar_pack_v3_exact_preview/07_男中年_avatar.png
+/storage/emulated/0/TTSvoices/备份/tts_avatar_pack_v3_exact_preview/08_女中年_avatar.png
+/storage/emulated/0/TTSvoices/备份/tts_avatar_pack_v3_exact_preview/09_女老年_avatar.png
+/storage/emulated/0/TTSvoices/备份/tts_avatar_pack_v3_exact_preview/10_男老年_avatar.png
+/storage/emulated/0/TTSvoices/备份/tts_avatar_pack_v3_exact_preview/preview_exact_from_zip_files.png
+/storage/emulated/0/TTSvoices/备份/tts_avatar_pack_v3_exact_preview/preview_transparent_grid_no_labels.png
+/storage/emulated/0/TTSvoices/备份/tts_avatar_pack_v3_exact_preview/tts_avatar_local_effect.png
+/storage/emulated/0/TTSvoices/备份/tts_avatar_pack_v3_exact_preview/tts_avatar_narration.png
+/storage/emulated/0/TTSvoices/备份/tts_avatar_pack_v3_exact_preview/tts_avatar_online_effect.png

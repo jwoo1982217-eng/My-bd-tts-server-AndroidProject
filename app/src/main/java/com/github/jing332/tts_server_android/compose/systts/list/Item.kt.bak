@@ -243,101 +243,122 @@ internal fun Item(
                 }
 
                 Row(
-    modifier = Modifier.fillMaxWidth(),
-    horizontalArrangement = Arrangement.End,
-    verticalAlignment = Alignment.CenterVertically
-) {
-    // 编辑按钮：放在试听按钮左边
-    Box(
-        modifier = Modifier
-            .size(32.dp)
-            .clip(CircleShape)
-            .clickable { onEdit() },
-        contentAlignment = Alignment.Center
-    ) {
-        Icon(
-            imageVector = Icons.Default.Edit,
-            contentDescription = stringResource(R.string.edit_desc, name),
-            modifier = Modifier.size(22.dp)
-        )
-    }
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val swapButton = AppConfig.isSwapListenAndEditButton.value
 
-    // 试听按钮：耳机按钮
-    Box(
-        modifier = Modifier
-            .size(32.dp)
-            .clip(CircleShape)
-            .clickable { onAudition() },
-        contentAlignment = Alignment.Center
-    ) {
-        Icon(
-            imageVector = Icons.Default.Headphones,
-            contentDescription = stringResource(R.string.audition),
-            modifier = Modifier.size(22.dp)
-        )
-    }
+                    Box(
+                        modifier = Modifier
+                            .size(32.dp)
+                            .clip(CircleShape)
+                            .combinedClickable(
+                                onClick = {
+                                    if (swapButton) onAudition() else onEdit()
+                                },
+                                onLongClick = {
+                                    if (swapButton) onEdit() else onAudition()
+                                }
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = if (swapButton) {
+                                Icons.Default.Headphones
+                            } else {
+                                Icons.Default.Edit
+                            },
+                            contentDescription = if (swapButton) {
+                                stringResource(R.string.audition)
+                            } else {
+                                stringResource(R.string.edit_desc, name)
+                            },
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
 
-    var showOptions by remember { mutableStateOf(false) }
+                    var showOptions by remember { mutableStateOf(false) }
 
-    // 更多按钮：只保留复制、导出、删除
-    Box(
-        modifier = Modifier
-            .size(32.dp)
-            .clip(CircleShape)
-            .clickable { showOptions = true },
-        contentAlignment = Alignment.Center
-    ) {
-        Icon(
-            imageVector = Icons.Default.MoreVert,
-            contentDescription = stringResource(R.string.more_options_desc, name),
-            modifier = Modifier.size(22.dp)
-        )
+                    Box(
+                        modifier = Modifier
+                            .size(32.dp)
+                            .clip(CircleShape)
+                            .clickable { showOptions = true },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.MoreVert,
+                            contentDescription = stringResource(R.string.more_options_desc, name),
+                            modifier = Modifier.size(22.dp)
+                        )
 
-        DropdownMenu(
-            expanded = showOptions,
-            onDismissRequest = { showOptions = false }
-        ) {
-            DropdownMenuItem(
-                text = { Text(stringResource(id = R.string.copy)) },
-                onClick = {
-                    showOptions = false
-                    onCopy()
-                },
-                leadingIcon = {
-                    Icon(Icons.Default.CopyAll, null)
+                        DropdownMenu(
+                            expanded = showOptions,
+                            onDismissRequest = { showOptions = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        stringResource(
+                                            id = if (swapButton) R.string.edit else R.string.audition
+                                        )
+                                    )
+                                },
+                                onClick = {
+                                    showOptions = false
+                                    if (swapButton) onEdit() else onAudition()
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        if (swapButton) Icons.Default.Edit else Icons.Default.Headphones,
+                                        null
+                                    )
+                                }
+                            )
+
+                            DropdownMenuItem(
+                                text = { Text(stringResource(id = R.string.copy)) },
+                                onClick = {
+                                    showOptions = false
+                                    onCopy()
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Default.CopyAll, null)
+                                }
+                            )
+
+                            DropdownMenuItem(
+                                text = { Text(stringResource(id = R.string.export_config)) },
+                                onClick = {
+                                    showOptions = false
+                                    onExport()
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Output, null)
+                                }
+                            )
+
+                            HorizontalDivider()
+
+                            DropdownMenuItem(
+                                text = { Text(stringResource(id = R.string.delete)) },
+                                onClick = {
+                                    showOptions = false
+                                    onDelete()
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.DeleteForever,
+                                        null,
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                }
+                            )
+                        }
+                    }
                 }
-            )
 
-            DropdownMenuItem(
-                text = { Text(stringResource(id = R.string.export_config)) },
-                onClick = {
-                    showOptions = false
-                    onExport()
-                },
-                leadingIcon = {
-                    Icon(Icons.Default.Output, null)
-                }
-            )
-
-            HorizontalDivider()
-
-            DropdownMenuItem(
-                text = { Text(stringResource(id = R.string.delete)) },
-                onClick = {
-                    showOptions = false
-                    onDelete()
-                },
-                leadingIcon = {
-                    Icon(
-                        Icons.Default.DeleteForever,
-                        null,
-                        tint = MaterialTheme.colorScheme.error
-                    )
-                }
-            )
-        }
-    }
-}
                 if (standby || type.isNotBlank()) {
                     Text(
                         text = listOf(

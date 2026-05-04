@@ -1,0 +1,363 @@
+package com.github.jing332.tts_server_android.compose.systts.list
+
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CopyAll
+import androidx.compose.material.icons.filled.DeleteForever
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Headphones
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Output
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedCard
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import com.github.jing332.common.utils.StringUtils.limitLength
+import com.github.jing332.common.utils.performLongPress
+import com.github.jing332.tts_server_android.R
+import com.github.jing332.tts_server_android.conf.AppConfig
+import org.burnoutcrew.reorderable.ReorderableLazyListState
+import org.burnoutcrew.reorderable.detectReorder
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+internal fun Item(
+    modifier: Modifier,
+    name: String,
+    avatarRes: Int = R.drawable.avatar_default,
+    avatarUrl: String? = null,
+    tagName: String,
+    type: String,
+    desc: String,
+    params: String,
+    reorderState: ReorderableLazyListState,
+    standby: Boolean,
+    enabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    onCopy: () -> Unit,
+    onDelete: () -> Unit,
+    onEdit: () -> Unit,
+    onAudition: () -> Unit,
+    onExport: () -> Unit,
+) {
+    val view = LocalView.current
+    val context = LocalContext.current
+
+    val limitNameLen by remember { AppConfig.limitNameLength }
+    val titleLine = remember(name, limitNameLen) {
+        val raw = if (limitNameLen == 0) name else name.limitLength(limitNameLen)
+        oneLine(raw)
+    }
+
+    val limitTagLen by remember { AppConfig.limitTagLength }
+    val limitedTagName = remember(tagName, limitTagLen) {
+        val raw = if (limitTagLen == 0) tagName else tagName.limitLength(limitTagLen)
+        oneLine(raw)
+    }
+
+    val infoLine = remember(desc, params) {
+        compactInfoLine(desc = desc, params = params)
+    }
+
+    OutlinedCard(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(82.dp),
+        shape = RoundedCornerShape(18.dp),
+        border = BorderStroke(
+            width = 1.dp,
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.60f)
+        ),
+        colors = CardDefaults.outlinedCardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.16f)
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(82.dp)
+                .combinedClickable(
+                    onClickLabel = stringResource(R.string.quick_edit),
+                    onClick = onClick,
+                    onLongClickLabel = stringResource(R.string.switch_tag),
+                    onLongClick = {
+                        view.performLongPress()
+                        onLongClick()
+                    }
+                )
+                .padding(horizontal = 8.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Checkbox(
+                modifier = Modifier
+                    .size(34.dp)
+                    .detectReorder(reorderState),
+                checked = enabled,
+                onCheckedChange = onEnabledChange,
+            )
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                AsyncImage(
+                    model = ImageRequest.Builder(context)
+                        .data(avatarUrl?.takeIf { it.isNotBlank() } ?: avatarRes)
+                        .crossfade(true)
+                        .placeholder(avatarRes)
+                        .error(avatarRes)
+                        .fallback(avatarRes)
+                        .build(),
+                    contentDescription = null,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+
+            Spacer(modifier = Modifier.width(12.dp))
+
+            Column(
+                modifier = Modifier.weight(1f),
+                horizontalAlignment = Alignment.Start
+            ) {
+                Text(
+                    text = titleLine,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Text(
+                    text = infoLine,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            Column(
+                modifier = Modifier.width(112.dp),
+                horizontalAlignment = Alignment.End
+            ) {
+                if (limitedTagName.isNotEmpty()) {
+                    TagScreen(
+                        tag = limitedTagName,
+                        modifier = Modifier
+                            .widthIn(max = 108.dp)
+                            .padding(bottom = 4.dp)
+                    )
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val swapButton = AppConfig.isSwapListenAndEditButton.value
+
+                    IconButton(
+                        modifier = Modifier.size(30.dp),
+                        onClick = { if (swapButton) onAudition() else onEdit() }
+                    ) {
+                        Icon(
+                            imageVector = if (swapButton) Icons.Default.Headphones else Icons.Default.Edit,
+                            contentDescription = stringResource(
+                                id = if (swapButton) R.string.audition else R.string.edit_desc,
+                                name
+                            )
+                        )
+                    }
+
+                    var showOptions by remember { mutableStateOf(false) }
+
+                    IconButton(
+                        modifier = Modifier.size(30.dp),
+                        onClick = { showOptions = true }
+                    ) {
+                        Icon(
+                            Icons.Default.MoreVert,
+                            stringResource(id = R.string.more_options_desc, name)
+                        )
+
+                        DropdownMenu(
+                            expanded = showOptions,
+                            onDismissRequest = { showOptions = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        stringResource(
+                                            id = if (swapButton) R.string.edit else R.string.audition
+                                        )
+                                    )
+                                },
+                                onClick = {
+                                    showOptions = false
+                                    if (swapButton) onEdit() else onAudition()
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        if (swapButton) Icons.Default.Edit else Icons.Default.Headphones,
+                                        null
+                                    )
+                                }
+                            )
+
+                            DropdownMenuItem(
+                                text = { Text(stringResource(id = R.string.copy)) },
+                                onClick = {
+                                    showOptions = false
+                                    onCopy()
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Default.CopyAll, null)
+                                }
+                            )
+
+                            DropdownMenuItem(
+                                text = { Text(stringResource(id = R.string.export_config)) },
+                                onClick = {
+                                    showOptions = false
+                                    onExport()
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Output, null)
+                                }
+                            )
+
+                            HorizontalDivider()
+
+                            DropdownMenuItem(
+                                text = { Text(stringResource(id = R.string.delete)) },
+                                onClick = {
+                                    showOptions = false
+                                    onDelete()
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.DeleteForever,
+                                        null,
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                }
+                            )
+                        }
+                    }
+                }
+
+                if (standby || type.isNotBlank()) {
+                    Text(
+                        text = listOf(
+                            if (standby) stringResource(id = R.string.systts_standby) else "",
+                            type
+                        ).filter { it.isNotBlank() }.joinToString(" "),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.tertiary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TagScreen(
+    modifier: Modifier = Modifier,
+    tag: String
+) {
+    OutlinedCard(
+        shape = RoundedCornerShape(10.dp),
+        modifier = modifier,
+        border = BorderStroke(
+            width = 1.dp,
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.85f)
+        ),
+        colors = CardDefaults.outlinedCardColors(
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f)
+        )
+    ) {
+        Text(
+            text = tag,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.secondary,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+        )
+    }
+}
+
+private fun oneLine(text: String): String {
+    return text
+        .replace("<br>", " ")
+        .replace("<br/>", " ")
+        .replace("<br />", " ")
+        .replace("\n", " ")
+        .replace("\r", " ")
+        .replace(Regex("\\s+"), " ")
+        .trim()
+}
+
+private fun compactInfoLine(desc: String, params: String): String {
+    val d = oneLine(desc)
+    val p = oneLine(params)
+
+    val candidates = listOf(p, d)
+
+    return candidates.firstOrNull {
+        it.contains("语速") || it.contains("音量") || it.contains("音高")
+    } ?: p.ifBlank { d }
+}

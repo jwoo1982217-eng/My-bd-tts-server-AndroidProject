@@ -1,7 +1,5 @@
 package com.github.jing332.tts_server_android.compose.systts.list
 // 第一段：Android / Compose import
-import com.github.jing332.tts_server_android.compose.systts.list.avatar.resolvePluginAvatarUrl
-import com.github.jing332.tts_server_android.compose.systts.list.avatar.resolveLocalAvatarRes
 import android.content.Context
 import android.content.Intent
 import androidx.activity.compose.BackHandler
@@ -3703,8 +3701,6 @@ if (showBatchMoveDialog) {
                     bottom = 4.dp
                 ),
                 name = item.displayName,
-                avatarRes = resolveLocalAvatarRes(item),
-                avatarUrl = resolvePluginAvatarUrl(item),
                 tagName = descriptor.tagName,
                 type = descriptor.type,
                 standby = descriptor.standby,
@@ -4047,8 +4043,6 @@ if (showBatchMoveDialog) {
                             bottom = 4.dp
                         ),
                         name = item.displayName,
-                avatarRes = resolveLocalAvatarRes(item),
-                avatarUrl = resolvePluginAvatarUrl(item),
                         tagName = descriptor.tagName,
                         type = descriptor.type,
                         standby = descriptor.standby,

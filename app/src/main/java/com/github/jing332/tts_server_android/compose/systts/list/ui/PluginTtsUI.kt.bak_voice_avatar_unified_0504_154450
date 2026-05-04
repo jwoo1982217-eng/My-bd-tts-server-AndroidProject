@@ -1,6 +1,5 @@
 package com.github.jing332.tts_server_android.compose.systts.list.ui
 
-import com.github.jing332.tts_server_android.compose.systts.list.avatar.resolveVoiceAvatarUri
 import android.util.Log
 import android.widget.LinearLayout
 import androidx.compose.animation.animateContentSize
@@ -228,14 +227,10 @@ class PluginTtsUI : IConfigUI() {
                         ?: tts.data["voiceName"]
                         ?: systts.displayName.orEmpty()
 
-                    val saveAvatarUrl = resolveVoiceAvatarUri(
-                        packageName = context.packageName,
-                        voiceName = saveVoiceName,
-                        voiceId = tts.voice,
-                        pluginIcon = currentVoiceItem?.icon
-                            ?: tts.data["avatarUrl"]
-                            ?: tts.data["icon"]
-                    )
+                    val saveAvatarUrl = currentVoiceItem?.icon
+                        ?: tts.data["avatarUrl"]
+                        ?: tts.data["icon"]
+                        ?: ""
 
                     val newData = tts.data.toMutableMap().apply {
                         if (saveVoiceName.isNotBlank()) {
@@ -404,23 +399,16 @@ class PluginTtsUI : IConfigUI() {
                                 }
                             }
 
-                            val voiceIcons = voiceValues.mapIndexed { index, voiceId ->
-                                val voiceNameForAvatar = voiceEntries.getOrNull(index).orEmpty()
-                                val pluginIcon =
-                                    if (voiceId == savedVoiceId) {
-                                        tts.data["avatarUrl"]
-                                            ?: tts.data["icon"]
-                                            ?: realVm.voices.firstOrNull { it.id == voiceId }?.icon
-                                    } else {
-                                        realVm.voices.firstOrNull { it.id == voiceId }?.icon
-                                    }
-
-                                resolveVoiceAvatarUri(
-                                    packageName = context.packageName,
-                                    voiceName = voiceNameForAvatar,
-                                    voiceId = voiceId,
-                                    pluginIcon = pluginIcon
-                                )
+                            val voiceIcons = voiceValues.map { voiceId ->
+                                if (voiceId == savedVoiceId) {
+                                    tts.data["avatarUrl"]
+                                        ?: tts.data["icon"]
+                                        ?: realVm.voices.firstOrNull { it.id == voiceId }?.icon
+                                        ?: ""
+                                } else {
+                                    realVm.voices.firstOrNull { it.id == voiceId }?.icon
+                                        ?: ""
+                                }
                             }
 
                             AppSpinner(
@@ -444,20 +432,16 @@ class PluginTtsUI : IConfigUI() {
 
                                     val selectedVoiceItem = realVm.voices.firstOrNull { it.id == selectedVoice }
                                     val selectedName = selectedVoiceItem?.name ?: name.toString()
-
-                                    val selectedAvatar = resolveVoiceAvatarUri(
-                                        packageName = context.packageName,
-                                        voiceName = selectedName,
-                                        voiceId = selectedVoice,
-                                        pluginIcon = selectedVoiceItem?.icon
-                                    )
+                                    val selectedIcon = selectedVoiceItem?.icon.orEmpty()
 
                                     val lastName = savedVoiceName
 
                                     val newData = tts.data.toMutableMap().apply {
                                         put("voiceName", selectedName)
-                                        put("avatarUrl", selectedAvatar)
-                                        put("icon", selectedAvatar)
+                                        if (selectedIcon.isNotBlank()) {
+                                            put("avatarUrl", selectedIcon)
+                                            put("icon", selectedIcon)
+                                        }
                                     }.toMap()
 
                                     onSysttsChange(
