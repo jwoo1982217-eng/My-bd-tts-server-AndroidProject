@@ -19,14 +19,14 @@ task clean(type: Delete) {
 subprojects { project ->
     configurations.configureEach {
         resolutionStrategy {
-            force 'androidx.core:core:1.13.1'
-            force 'androidx.core:core-ktx:1.13.1'
+            force 'androidx.core:core:1.15.0'
+            force 'androidx.core:core-ktx:1.15.0'
 
             eachDependency { details ->
                 if (details.requested.group == 'androidx.core' &&
                     (details.requested.name == 'core' || details.requested.name == 'core-ktx')) {
-                    details.useVersion '1.13.1'
-                    details.because 'compileSdk 34 on Termux'
+                    details.useVersion '1.15.0'
+                    details.because 'compileSdk 36'
                 }
             }
         }
