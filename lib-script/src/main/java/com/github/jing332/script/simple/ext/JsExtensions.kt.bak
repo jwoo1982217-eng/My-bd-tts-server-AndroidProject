@@ -1,0 +1,333 @@
+package com.github.jing332.script.simple.ext
+
+import android.content.Context
+import cn.hutool.core.lang.UUID
+import com.github.jing332.common.audio.AudioDecoder
+import com.github.jing332.common.utils.FileUtils
+import com.github.jing332.script.annotation.ScriptInterface
+import java.io.File
+import java.io.InputStream
+
+@Suppress("unused")
+open class JsExtensions(open val context: Context, open val engineId: String = "") :
+    JsNet(engineId),
+    JsCrypto,
+    JsUserInterface {
+
+    @Suppress("MemberVisibilityCanBePrivate")
+    @ScriptInterface
+    fun getAudioSampleRate(audio: ByteArray): Int {
+        return AudioDecoder.getSampleRateAndMime(audio).first
+    }
+
+    @ScriptInterface
+    fun getAudioSampleRate(ins: InputStream): Int {
+        return getAudioSampleRate(ins.readBytes())
+    }
+
+    @ScriptInterface
+    fun strToBytes(str: String): ByteArray {
+        return str.toByteArray(charset("UTF-8"))
+    }
+
+    @ScriptInterface
+    fun strToBytes(str: String, charset: String): ByteArray {
+        return str.toByteArray(charset(charset))
+    }
+
+    @ScriptInterface
+    fun bytesToStr(bytes: ByteArray): String {
+        return String(bytes, charset("UTF-8"))
+    }
+
+    @ScriptInterface
+    fun bytesToStr(bytes: ByteArray, charset: String): String {
+        return String(bytes, charset(charset))
+    }
+
+    private fun rootDir(): File {
+        val externalFilesDir = context.getExternalFilesDir(null)
+        return externalFilesDir ?: context.filesDir
+    }
+
+    private fun pluginsRootDir(): File {
+        return File(rootDir(), "plugins")
+    }
+
+    private fun normalizeStorageEngineId(id: String): String {
+        val value = id.trim()
+        if (value.isBlank()) return value
+
+        val regex = Regex(
+            pattern = """([._-](db|dev|new|test|debug|bak|backup|manual)(_\d{3})?)$""",
+            option = RegexOption.IGNORE_CASE
+        )
+
+        return value.replace(regex, "")
+    }
+
+    private fun normalizedRelativePath(path: String): String {
+        return path
+            .trim()
+            .replace("\\", File.separator)
+            .trimStart(File.separatorChar)
+    }
+
+    private fun roleSharedBaseDir(): File {
+        return File(pluginsRootDir(), "mingwuyan")
+    }
+
+    private fun defaultPluginBaseDir(): File {
+        val storageEngineId = normalizeStorageEngineId(engineId)
+        val baseDir = File(pluginsRootDir(), storageEngineId)
+        val legacyDir = File(pluginsRootDir(), engineId)
+
+        if (
+            storageEngineId != engineId &&
+            !baseDir.exists() &&
+            legacyDir.exists()
+        ) {
+            runCatching {
+                FileUtils.copyFolder(legacyDir, baseDir)
+            }
+        }
+
+        return baseDir
+    }
+
+    private fun isRoleSharedFile(path: String): Boolean {
+        val normalizedPath = normalizedRelativePath(path).replace("\\", "/")
+        val fileName = normalizedPath.substringAfterLast("/")
+
+        if (fileName.startsWith("shuming.") && fileName.endsWith(".json")) {
+            return true
+        }
+
+        return fileName in setOf(
+            "miyue.txt",
+            "miyue_backup.txt",
+            "fayinren.json",
+            "fayinren_personality_summary.json",
+            "characterRecords.json",
+            "characterRecords_backup.json",
+            "gengxin.json",
+            "gengxin.txt",
+            "cunfang.txt",
+            "liebiao.json",
+            "yinxiao.json"
+        )
+    }
+
+    private fun copyLegacySharedFileIfNeeded(path: String, targetBaseDir: File) {
+        val relativePath = normalizedRelativePath(path)
+        if (relativePath.isBlank()) return
+
+        val targetFile = File(targetBaseDir, relativePath)
+        if (targetFile.exists()) return
+
+        val candidateDirs = listOf(
+            File(pluginsRootDir(), engineId),
+            defaultPluginBaseDir()
+        ).distinctBy { it.absolutePath }
+
+        candidateDirs.forEach { oldBaseDir ->
+            val oldFile = File(oldBaseDir, relativePath)
+            if (oldFile.exists() && oldFile.isFile) {
+                runCatching {
+                    targetFile.parentFile?.mkdirs()
+                    targetFile.writeBytes(oldFile.readBytes())
+                }
+                return
+            }
+        }
+    }
+
+    private fun baseDirForPath(path: String): File {
+        if (isRoleSharedFile(path)) {
+            val sharedDir = roleSharedBaseDir()
+            copyLegacySharedFileIfNeeded(path, sharedDir)
+            return sharedDir
+        }
+
+        return defaultPluginBaseDir()
+    }
+
+    private fun pluginBaseDir(): File {
+        return defaultPluginBaseDir()
+    }
+
+//****************文件操作******************//
+    @Suppress("MemberVisibilityCanBePrivate")
+    private fun defaultScriptFile(path: String): File {
+        val baseDir = baseDirForPath(path)
+        val relativePath = normalizedRelativePath(path)
+        return File(baseDir, relativePath)
+    }
+
+    private fun roleManagerSharedFileName(path: String): String {
+        return path
+            .replace("\\", "/")
+            .substringAfterLast("/")
+            .trim()
+    }
+
+    private fun isRoleManagerKeyFile(path: String): Boolean {
+        return when (roleManagerSharedFileName(path)) {
+            "miyue.txt",
+            "miyue_backup.txt",
+            "gengxin.txt" -> true
+            else -> false
+        }
+    }
+
+    private fun isRoleManagerBookDataFile(path: String): Boolean {
+        val name = roleManagerSharedFileName(path)
+
+        return when (name) {
+            "liebiao.json",
+            "cunfang.txt",
+            "characterRecords.json",
+            "characterRecords_backup.json",
+            "gengxin.json",
+            "yinxiao.json",
+            "fayinren.json",
+            "fayinren_personality_summary.json" -> true
+            else -> name.startsWith("shuming.") && name.endsWith(".json")
+        }
+    }
+
+    private fun isRoleManagerSharedFile(path: String): Boolean {
+        return isRoleManagerKeyFile(path) || isRoleManagerBookDataFile(path)
+    }
+
+    private fun isEmptyRoleManagerPayload(text: String): Boolean {
+        val value = text.trim()
+        return value.isEmpty() ||
+                value == "[]" ||
+                value == "{}" ||
+                value.equals("null", ignoreCase = true)
+    }
+
+    private fun roleManagerSharedFile(path: String): File {
+        val fileName = roleManagerSharedFileName(path).ifBlank { "unknown.txt" }
+        val dir = File(context.filesDir, "role_manager_shared")
+        val sharedFile = File(dir, fileName)
+
+        /*
+         * 兼容旧插件数据：
+         * 第一次读写共享文件时，如果全局共享目录还没有，
+         * 但当前插件自己的旧目录里有同名文件，就自动搬一份到共享目录。
+         */
+        if (!sharedFile.exists()) {
+            val oldFile = defaultScriptFile(path)
+            if (oldFile.exists()) {
+                runCatching {
+                    sharedFile.parentFile?.mkdirs()
+                    oldFile.copyTo(sharedFile, overwrite = false)
+                }
+            }
+        }
+
+        return sharedFile
+    }
+
+    /**
+     * 获取本地文件
+     * @param path 相对路径
+     * @return File
+     */
+    @ScriptInterface
+    fun getFile(path: String): File {
+        return if (isRoleManagerSharedFile(path)) {
+            roleManagerSharedFile(path)
+        } else {
+            defaultScriptFile(path)
+        }
+    }
+
+    /**
+     * 读Bytes文件
+     */
+    @ScriptInterface
+    fun readFile(path: String): ByteArray? {
+        val file = getFile(path)
+        if (file.exists()) {
+            return file.readBytes()
+        }
+        return null
+    }
+
+    /**
+     * 读取文本文件
+     */
+    @ScriptInterface
+    fun readTxtFile(path: String): String {
+        val file = getFile(path)
+        if (file.exists()) {
+            return String(file.readBytes(), charset(charsetDetect(file)))
+        }
+        return ""
+    }
+
+    /**
+     * 获取文件编码
+     */
+    @ScriptInterface
+    fun charsetDetect(f: File): String = FileUtils.getFileCharsetSimple(f)
+
+    @ScriptInterface
+    fun readTxtFile(path: String, charsetName: String): String {
+        val file = getFile(path)
+        if (file.exists()) {
+            return String(file.readBytes(), charset(charsetName))
+        }
+        return ""
+    }
+
+    @JvmOverloads
+    @ScriptInterface
+    fun writeTxtFile(path: String, text: String, charset: String = "UTF-8") {
+        val file = getFile(path)
+        file.parentFile?.mkdirs()
+
+        val cs = charset(charset)
+
+        /*
+         * 防止切换角色管理插件时，新插件初始化空数据，
+         * 把已有密钥、书籍列表、角色记录覆盖成空。
+         */
+        if (
+            (isRoleManagerKeyFile(path) || isRoleManagerBookDataFile(path)) &&
+            isEmptyRoleManagerPayload(text) &&
+            file.exists()
+        ) {
+            val oldText = runCatching {
+                file.readText(cs)
+            }.getOrDefault("")
+
+            if (!isEmptyRoleManagerPayload(oldText)) {
+                return
+            }
+        }
+
+        file.writeText(text, cs)
+    }
+
+    @ScriptInterface
+    fun fileExist(path: String): Boolean {
+        return FileUtils.exists(getFile(path))
+    }
+
+    /**
+     * 删除本地文件
+     * @return 操作是否成功
+     */
+    @ScriptInterface
+    fun deleteFile(path: String): Boolean {
+        val file = getFile(path)
+        return file.delete()
+    }
+
+    @ScriptInterface
+    fun randomUUID(): String = UUID.randomUUID().toString()
+}

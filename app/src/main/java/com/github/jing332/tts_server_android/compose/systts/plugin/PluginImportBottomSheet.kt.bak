@@ -1,0 +1,622 @@
+package com.github.jing332.tts_server_android.compose.systts.plugin
+
+import android.content.Context
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.github.jing332.common.utils.longToast
+import com.github.jing332.database.dbm
+import com.github.jing332.database.entities.plugin.Plugin
+import com.github.jing332.database.entities.systts.SystemTtsV2
+import com.github.jing332.database.entities.systts.TtsConfigurationDTO
+import com.github.jing332.database.entities.systts.source.PluginTtsSource
+import com.github.jing332.tts_server_android.compose.systts.ConfigImportBottomSheet
+import com.github.jing332.tts_server_android.compose.systts.ConfigModel
+import com.github.jing332.tts_server_android.compose.systts.SelectImportConfigDialog
+import com.github.jing332.tts_server_android.constant.AppConst
+import com.github.jing332.tts_server_android.service.systts.SystemTtsService
+import kotlinx.coroutines.flow.conflate
+
+private const val PLUGIN_REDIRECT_PREFS = "plugin_id_redirect_map"
+
+private fun safeIdPart(text: String): String {
+    return text
+        .trim()
+        .replace(Regex("[^A-Za-z0-9_\\-.]+"), "_")
+        .replace(Regex("_+"), "_")
+        .trim('_')
+}
+
+private fun makeUniquePluginId(
+    originalId: String,
+    version: Any?,
+    usedIds: Set<String>,
+): String {
+    val baseId = originalId.ifBlank { "plugin" }
+    val versionPart = safeIdPart(version?.toString().orEmpty()).ifBlank { "copy" }
+
+    var candidate = "${baseId}_v$versionPart"
+    var index = 2
+
+    while (usedIds.contains(candidate)) {
+        candidate = "${baseId}_v${versionPart}_$index"
+        index++
+    }
+
+    return candidate
+}
+
+private fun replacePluginJsIdInCode(
+    code: String,
+    oldId: String,
+    newId: String,
+): String {
+    if (oldId.isBlank() || oldId == newId) return code
+
+    var result = code
+
+    result = Regex(
+        pattern = "([\"']id[\"']\\s*:\\s*[\"'])${Regex.escape(oldId)}([\"'])"
+    ).replace(result) { match ->
+        match.groupValues[1] + newId + match.groupValues[2]
+    }
+
+    result = Regex(
+        pattern = "(\\bid\\s*:\\s*[\"'])${Regex.escape(oldId)}([\"'])"
+    ).replace(result) { match ->
+        match.groupValues[1] + newId + match.groupValues[2]
+    }
+
+    result = Regex(
+        pattern = "(PluginJS\\.id\\s*=\\s*[\"'])${Regex.escape(oldId)}([\"'])"
+    ).replace(result) { match ->
+        match.groupValues[1] + newId + match.groupValues[2]
+    }
+
+    return result
+}
+
+private data class PreparedPluginImport(
+    val plugins: List<Plugin>,
+    val redirectMap: Map<String, String>,
+)
+
+private data class ImportPluginAdaptMatch(
+    val oldPluginId: String,
+    val targetPlugin: Plugin,
+    val count: Int,
+)
+
+private fun preparePluginsForImport(
+    selectedPlugins: List<Plugin>,
+    existingPlugins: List<Plugin>,
+): PreparedPluginImport {
+    val usedIds = existingPlugins.map { it.pluginId }.toMutableSet()
+    val usedNames = existingPlugins.map { it.name }.toMutableSet()
+    val redirectMap = mutableMapOf<String, String>()
+
+    fun makeUniquePluginName(baseName: String): String {
+        val safeBaseName = baseName.ifBlank { "未命名插件" }
+        var candidate = safeBaseName
+        var index = 2
+
+        while (usedNames.contains(candidate)) {
+            candidate = "$safeBaseName($index)"
+            index++
+        }
+
+        usedNames.add(candidate)
+        return candidate
+    }
+
+    val importList = selectedPlugins.map { plugin ->
+        val oldId = plugin.pluginId
+        val oldName = plugin.name
+
+        val finalId =
+            if (oldId.isNotBlank() && !usedIds.contains(oldId)) {
+                oldId
+            } else {
+                makeUniquePluginId(
+                    originalId = oldId,
+                    version = plugin.version,
+                    usedIds = usedIds
+                )
+            }
+
+        val finalName = makeUniquePluginName(oldName)
+
+        if (oldId.isNotBlank() && oldId != finalId) {
+            redirectMap[oldId] = finalId
+        }
+
+        usedIds.add(finalId)
+
+        plugin.copy(
+            pluginId = finalId,
+            name = finalName,
+            code = replacePluginJsIdInCode(
+                code = plugin.code,
+                oldId = oldId,
+                newId = finalId
+            )
+        )
+    }
+
+    return PreparedPluginImport(
+        plugins = importList,
+        redirectMap = redirectMap
+    )
+}
+
+private fun savePluginRedirectMap(
+    context: Context,
+    redirectMap: Map<String, String>,
+) {
+    if (redirectMap.isEmpty()) return
+
+    val prefs = context.getSharedPreferences(
+        PLUGIN_REDIRECT_PREFS,
+        Context.MODE_PRIVATE
+    )
+
+    prefs.edit().apply {
+        redirectMap.forEach { (oldId, newId) ->
+            putString(oldId, newId)
+        }
+    }.apply()
+}
+
+private fun pluginIdSegments(id: String): List<String> {
+    return id.trim()
+        .split(".")
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+}
+
+private fun commonPrefixLength(a: String, b: String): Int {
+    val x = pluginIdSegments(a)
+    val y = pluginIdSegments(b)
+
+    var count = 0
+    val max = minOf(x.size, y.size)
+
+    for (i in 0 until max) {
+        if (x[i] != y[i]) break
+        count++
+    }
+
+    return count
+}
+
+private fun normalizePluginVersionId(pluginId: String): String {
+    val value = pluginId.trim()
+    if (value.isBlank()) return value
+
+    val suffixRegex = Regex(
+        pattern = """([._-](db|dev|new|test|debug|bak|backup|manual)(_\d{3})?)$""",
+        option = RegexOption.IGNORE_CASE
+    )
+
+    val versionRegex = Regex(
+        pattern = """([._-]v?\d+)$""",
+        option = RegexOption.IGNORE_CASE
+    )
+
+    return value
+        .replace(suffixRegex, "")
+        .replace(versionRegex, "")
+}
+
+private fun isLikelySameSourcePluginId(
+    oldPluginId: String,
+    newPluginId: String,
+): Boolean {
+    val oldId = oldPluginId.trim()
+    val newId = newPluginId.trim()
+
+    if (oldId.isBlank() || newId.isBlank()) return false
+    if (oldId == newId) return true
+
+    if (oldId.startsWith("$newId.") || newId.startsWith("$oldId.")) {
+        return true
+    }
+
+    val oldBaseId = normalizePluginVersionId(oldId)
+    val newBaseId = normalizePluginVersionId(newId)
+
+    if (oldBaseId == newBaseId) {
+        return true
+    }
+
+    if (oldBaseId.startsWith("$newBaseId.") || newBaseId.startsWith("$oldBaseId.")) {
+        return true
+    }
+
+    return false
+}
+
+private fun findImportedPluginAdaptMatches(
+    importedPlugins: List<Plugin>,
+    allTts: List<SystemTtsV2>,
+): List<ImportPluginAdaptMatch> {
+    if (importedPlugins.isEmpty() || allTts.isEmpty()) return emptyList()
+
+    val sourcePluginIdCounts = allTts
+        .mapNotNull { systts ->
+            val config = systts.config as? TtsConfigurationDTO ?: return@mapNotNull null
+            val source = config.source as? PluginTtsSource ?: return@mapNotNull null
+
+            source.pluginId
+                .trim()
+                .takeIf { it.isNotBlank() }
+        }
+        .groupingBy { it }
+        .eachCount()
+
+    return importedPlugins.flatMap { targetPlugin ->
+        sourcePluginIdCounts
+            .filter { (oldPluginId, _) ->
+                oldPluginId != targetPlugin.pluginId &&
+                        isLikelySameSourcePluginId(
+                            oldPluginId = oldPluginId,
+                            newPluginId = targetPlugin.pluginId
+                        )
+            }
+            .map { (oldPluginId, count) ->
+                ImportPluginAdaptMatch(
+                    oldPluginId = oldPluginId,
+                    targetPlugin = targetPlugin,
+                    count = count
+                )
+            }
+    }.distinctBy {
+        it.oldPluginId + " -> " + it.targetPlugin.pluginId
+    }.sortedWith(
+        compareBy<ImportPluginAdaptMatch> { it.oldPluginId }
+            .thenBy { it.targetPlugin.pluginId }
+    )
+}
+
+private fun normalizeVoiceIdForMatch(raw: String): String {
+    return raw
+        .trim()
+        .removePrefix("clone_")
+        .replace(Regex("^ggref_\\d+_"), "")
+        .replace(Regex("[()（）\\s/\\\\.:：，,;；#?&=\\[\\]{}]+"), "_")
+        .replace(Regex("_+"), "_")
+        .trim('_')
+        .lowercase()
+}
+
+private fun extractCloneVoiceNamesFromPluginCode(code: String): List<String> {
+    val markerIndex = code.indexOf("CLONE_VOICE_NAMES")
+    if (markerIndex < 0) return emptyList()
+
+    val openIndex = code.indexOf("[", markerIndex)
+    if (openIndex < 0) return emptyList()
+
+    val closeIndex = code.indexOf("];", openIndex)
+    if (closeIndex < 0) return emptyList()
+
+    val block = code.substring(openIndex + 1, closeIndex)
+
+    return Regex("\"((?:\\\\.|[^\"])*)\"|'((?:\\\\.|[^'])*)'")
+        .findAll(block)
+        .mapNotNull { match ->
+            val value = match.groups[1]?.value ?: match.groups[2]?.value
+            value
+                ?.replace("\\\"", "\"")
+                ?.replace("\\'", "'")
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
+        }
+        .toList()
+}
+
+private fun safeVoiceIdAsGgref(name: String, index: Int): String {
+    var s = name
+        .replace(Regex("[()（）\\s/\\\\.:：，,;；#?&=\\[\\]{}]+"), "_")
+        .replace(Regex("_+"), "_")
+        .trim('_')
+
+    if (s.length > 70) {
+        s = s.substring(0, 70)
+    }
+
+    return "ggref_${index}_$s"
+}
+
+private fun safeVoiceIdAsClone(name: String): String {
+    return "clone_" + name.replace(Regex("[()]"), "_")
+}
+
+private fun buildTargetPluginVoiceIds(targetPlugin: Plugin): List<String> {
+    val names = extractCloneVoiceNamesFromPluginCode(targetPlugin.code)
+    if (names.isEmpty()) return emptyList()
+
+    val code = targetPlugin.code
+    val usesGgref = code.contains("ggref_")
+    val usesClone = code.contains("clone_")
+
+    val result = mutableListOf<String>()
+
+    names.forEachIndexed { index, name ->
+        if (usesGgref) {
+            result += safeVoiceIdAsGgref(name, index)
+        }
+
+        if (usesClone || !usesGgref) {
+            result += safeVoiceIdAsClone(name)
+        }
+
+        val cloneId = safeVoiceIdAsClone(name)
+        if (cloneId !in result) {
+            result += cloneId
+        }
+    }
+
+    return result.distinct()
+}
+
+private fun resolveVoiceIdForTargetPlugin(
+    oldVoiceId: String,
+    targetPlugin: Plugin,
+): String {
+    val old = oldVoiceId.trim()
+    if (old.isBlank()) return old
+
+    val targetVoiceIds = buildTargetPluginVoiceIds(targetPlugin)
+    if (targetVoiceIds.isEmpty()) {
+        return old
+    }
+
+    if (old in targetVoiceIds) {
+        return old
+    }
+
+    val oldNorm = normalizeVoiceIdForMatch(old)
+
+    targetVoiceIds.firstOrNull { newId ->
+        normalizeVoiceIdForMatch(newId) == oldNorm
+    }?.let { return it }
+
+    val oldNumber = Regex("^\\d{3,4}").find(oldNorm)?.value.orEmpty()
+    if (oldNumber.isNotBlank()) {
+        targetVoiceIds.firstOrNull { newId ->
+            Regex("^\\d{3,4}").find(normalizeVoiceIdForMatch(newId))?.value == oldNumber
+        }?.let { return it }
+    }
+
+    targetVoiceIds.firstOrNull { newId ->
+        val newNorm = normalizeVoiceIdForMatch(newId)
+        oldNorm.contains(newNorm) || newNorm.contains(oldNorm)
+    }?.let { return it }
+
+    return old
+}
+
+private fun adaptPluginIdToTarget(
+    oldPluginId: String,
+    targetPlugin: Plugin,
+): Int {
+    val targetPluginId = targetPlugin.pluginId
+
+    val updatedList = dbm.systemTtsV2.all.mapNotNull { systts ->
+        val config = systts.config as? TtsConfigurationDTO ?: return@mapNotNull null
+        val source = config.source as? PluginTtsSource ?: return@mapNotNull null
+
+        if (source.pluginId != oldPluginId) {
+            return@mapNotNull null
+        }
+
+        val migratedVoice = resolveVoiceIdForTargetPlugin(
+            oldVoiceId = source.voice,
+            targetPlugin = targetPlugin
+        )
+
+        systts.copy(
+            config = config.copy(
+                source = source.copy(
+                    pluginId = targetPluginId,
+                    voice = migratedVoice
+                )
+            )
+        )
+    }
+
+    if (updatedList.isNotEmpty()) {
+        dbm.systemTtsV2.update(*updatedList.toTypedArray())
+
+        if (updatedList.any { it.isEnabled }) {
+            SystemTtsService.notifyUpdateConfig()
+        }
+    }
+
+    return updatedList.size
+}
+
+@Composable
+private fun ImportedPluginAdaptDialog(
+    matches: List<ImportPluginAdaptMatch>,
+    onDismissRequest: () -> Unit,
+    onConfirmOne: (ImportPluginAdaptMatch) -> Unit,
+    onConfirmAll: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismissRequest,
+        title = {
+            Text("检测到同源插件旧音色")
+        },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState())
+            ) {
+                Text("导入的新插件和配置列表中的旧插件音色疑似同源。请选择是否把旧音色适配到新插件版本：")
+
+                Spacer(Modifier.height(8.dp))
+
+                matches.forEach { match ->
+                    TextButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            onConfirmOne(match)
+                        }
+                    ) {
+                        Text(
+                            text = "${match.oldPluginId} → ${match.targetPlugin.pluginId}（${match.count} 个音色）"
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                Text(
+                    text = "只会修改声音配置里的 pluginId，不会修改音色、朗读规则、标签、音频参数。",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirmAll) {
+                Text("全部适配")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismissRequest) {
+                Text("暂不适配")
+            }
+        }
+    )
+}
+
+@Composable
+fun PluginImportBottomSheet(onDismissRequest: () -> Unit) {
+    val context = LocalContext.current
+    var list by remember { mutableStateOf<List<Plugin>?>(null) }
+    var pendingAdaptMatches by remember { mutableStateOf<List<ImportPluginAdaptMatch>?>(null) }
+
+    val pluginFlow = remember { dbm.pluginDao.flowAll().conflate() }
+    val existingPlugins by pluginFlow.collectAsStateWithLifecycle(emptyList())
+
+    if (pendingAdaptMatches != null) {
+        ImportedPluginAdaptDialog(
+            matches = pendingAdaptMatches!!,
+            onDismissRequest = {
+                pendingAdaptMatches = null
+            },
+            onConfirmOne = { match ->
+                val count = adaptPluginIdToTarget(
+    oldPluginId = match.oldPluginId,
+    targetPlugin = match.targetPlugin
+)
+
+                pendingAdaptMatches = null
+
+                if (count > 0) {
+                    context.longToast("已适配 $count 个音色：${match.oldPluginId} → ${match.targetPlugin.pluginId}")
+                } else {
+                    context.longToast("没有找到可适配的音色")
+                }
+            },
+            onConfirmAll = {
+                val matches = pendingAdaptMatches.orEmpty()
+                var totalCount = 0
+
+                matches.forEach { match ->
+                    totalCount += adaptPluginIdToTarget(
+    oldPluginId = match.oldPluginId,
+    targetPlugin = match.targetPlugin
+)
+                }
+
+                pendingAdaptMatches = null
+
+                if (totalCount > 0) {
+                    context.longToast("已适配 $totalCount 个音色到新插件版本")
+                } else {
+                    context.longToast("没有找到可适配的音色")
+                }
+            }
+        )
+    }
+
+    if (list != null) {
+        SelectImportConfigDialog(
+            onDismissRequest = {
+                list = null
+            },
+            models = list!!.map { plugin ->
+                val isConflict = existingPlugins.any { old ->
+                    old.pluginId == plugin.pluginId || old.name == plugin.name
+                }
+
+                ConfigModel(
+                    isSelected = true,
+                    title = if (isConflict) {
+                        "${plugin.name}  → 自动共存导入"
+                    } else {
+                        plugin.name
+                    },
+                    subtitle = if (isConflict) {
+                        "${plugin.author} - v${plugin.version}，pluginId 或名称已存在，将自动追加后缀"
+                    } else {
+                        "${plugin.author} - v${plugin.version}"
+                    },
+                    plugin
+                )
+            },
+            onSelectedList = { selected ->
+                val selectedPlugins = selected.map { it as Plugin }
+
+                val prepared = preparePluginsForImport(
+                    selectedPlugins = selectedPlugins,
+                    existingPlugins = existingPlugins
+                )
+
+                dbm.pluginDao.insert(*prepared.plugins.toTypedArray())
+
+                savePluginRedirectMap(
+                    context = context,
+                    redirectMap = prepared.redirectMap
+                )
+
+                val matches = findImportedPluginAdaptMatches(
+                    importedPlugins = prepared.plugins,
+                    allTts = dbm.systemTtsV2.all
+                )
+
+                list = null
+
+                if (matches.isNotEmpty()) {
+                    pendingAdaptMatches = matches
+                }
+
+                prepared.plugins.size
+            }
+        )
+    }
+
+    ConfigImportBottomSheet(
+        onDismissRequest = onDismissRequest,
+        onImport = {
+            list = AppConst.jsonBuilder.decodeFromString<List<Plugin>>(it)
+        }
+    )
+}

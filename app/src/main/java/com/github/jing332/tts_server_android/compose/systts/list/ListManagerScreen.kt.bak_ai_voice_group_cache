@@ -1,0 +1,4434 @@
+package com.github.jing332.tts_server_android.compose.systts.list
+// 第一段：Android / Compose import
+import android.content.Context
+import android.content.Intent
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+
+// 第二段：项目自己的 import
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.drake.net.utils.withIO
+import com.github.jing332.common.utils.longToast
+import com.github.jing332.common.utils.toast
+import com.github.jing332.compose.widgets.ControlBottomBarVisibility
+import com.github.jing332.compose.widgets.LazyListIndexStateSaver
+import com.github.jing332.compose.widgets.ShadowedDraggableItem
+import com.github.jing332.compose.widgets.TextFieldDialog
+import com.github.jing332.database.dbm
+import com.github.jing332.database.entities.AbstractListGroup
+import com.github.jing332.database.entities.SpeechRule
+import com.github.jing332.database.entities.plugin.Plugin
+import com.github.jing332.database.entities.systts.BgmConfiguration
+import com.github.jing332.database.entities.systts.GroupWithSystemTts
+import com.github.jing332.database.entities.systts.SystemTtsGroup
+import com.github.jing332.database.entities.systts.SpeechRuleInfo
+import com.github.jing332.database.entities.systts.BasicAudioFormat
+import com.github.jing332.database.entities.systts.SystemTtsV2
+import com.github.jing332.database.entities.systts.TtsConfigurationDTO
+import com.github.jing332.database.entities.systts.source.LocalTtsSource
+import com.github.jing332.database.entities.systts.source.PluginTtsSource
+import com.github.jing332.tts.speech.plugin.engine.TtsPluginUiEngineV2
+import com.github.jing332.tts_server_android.AppLocale
+import com.github.jing332.tts_server_android.R
+import com.github.jing332.tts_server_android.compose.AppDefaultProperties
+import com.github.jing332.tts_server_android.compose.LocalBottomBarBehavior
+import com.github.jing332.tts_server_android.compose.LocalNavController
+import com.github.jing332.tts_server_android.compose.SharedViewModel
+import com.github.jing332.tts_server_android.compose.nav.NavRoutes
+import com.github.jing332.tts_server_android.compose.nav.NavTopAppBar
+import com.github.jing332.tts_server_android.compose.systts.AuditionDialog
+import com.github.jing332.tts_server_android.compose.systts.ConfigDeleteDialog
+import com.github.jing332.tts_server_android.compose.systts.ConfigExportBottomSheet
+import com.github.jing332.tts_server_android.compose.systts.list.ui.ItemDescriptorFactory
+import com.github.jing332.tts_server_android.compose.systts.list.ui.widgets.QuickEditBottomSheet
+import com.github.jing332.tts_server_android.compose.systts.list.ui.widgets.TagDataClearConfirmDialog
+import com.github.jing332.tts_server_android.compose.systts.plugin.PluginSelectionDialog
+import com.github.jing332.tts_server_android.compose.systts.sizeToToggleableState
+import com.github.jing332.tts_server_android.constant.AppConst
+import com.github.jing332.tts_server_android.constant.SpeechTarget
+import com.github.jing332.tts_server_android.model.rhino.speech_rule.SpeechRuleEngine
+import com.github.jing332.tts_server_android.service.systts.SystemTtsService
+import com.github.jing332.tts_server_android.toCode
+import com.github.jing332.tts_server_android.ui.view.AppDialogs.displayErrorDialog
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.conflate
+import java.io.File
+import java.io.OutputStreamWriter
+import java.net.URL
+import org.json.JSONArray
+import org.json.JSONObject
+import kotlinx.coroutines.launch
+import kotlinx.serialization.encodeToString
+import org.burnoutcrew.reorderable.detectReorderAfterLongPress
+import org.burnoutcrew.reorderable.rememberReorderableLazyListState
+import org.burnoutcrew.reorderable.reorderable
+import kotlin.math.roundToInt
+import kotlin.system.exitProcess
+
+private data class GroupMoveOption(
+    val group: SystemTtsGroup,
+    val level: Int,
+)
+
+private data class SearchTtsResult(
+    val group: SystemTtsGroup,
+    val groupPath: String,
+    val pluginName: String,
+    val pluginId: String,
+    val tts: SystemTtsV2,
+)
+
+private data class AutoTagRule(
+    val tagPrefix: String,
+    val tagNamePrefix: String,
+    val needNumber: Boolean = true,
+    val sortRank: Int = 999,
+    val keywords: List<String> = emptyList(),
+)
+
+private data class AutoTagWorkItem(
+    val originalIndex: Int,
+    val item: SystemTtsV2,
+    val rule: AutoTagRule,
+)
+
+private val AUTO_TAG_RULES = listOf(
+    AutoTagRule(
+        tagPrefix = "旁白",
+        tagNamePrefix = "旁白",
+        needNumber = false,
+        sortRank = 0,
+        keywords = listOf("旁白", "对话旁白", "叙述", "旁述")
+    ),
+
+    AutoTagRule(
+        tagPrefix = "主角 女主",
+        tagNamePrefix = "主角 女主",
+        sortRank = 10,
+        keywords = listOf("女主角", "女主", "主角女", "女主人公")
+    ),
+    AutoTagRule(
+        tagPrefix = "主角 男主",
+        tagNamePrefix = "主角 男主",
+        sortRank = 11,
+        keywords = listOf("男主角", "男主", "主角男", "男主人公")
+    ),
+
+    AutoTagRule(
+        tagPrefix = "女童",
+        tagNamePrefix = "女/女童",
+        sortRank = 20,
+        keywords = listOf("女童", "女孩", "小女孩", "幼女")
+    ),
+    AutoTagRule(
+        tagPrefix = "少女",
+        tagNamePrefix = "女/少女",
+        sortRank = 21,
+        keywords = listOf("少女", "萝莉", "青春女", "年轻少女")
+    ),
+    AutoTagRule(
+        tagPrefix = "女青年",
+        tagNamePrefix = "女/女青年",
+        sortRank = 22,
+        keywords = listOf("女青年", "青年女", "年轻女", "女生", "女性青年")
+    ),
+    AutoTagRule(
+        tagPrefix = "女中年",
+        tagNamePrefix = "女/女中年",
+        sortRank = 23,
+        keywords = listOf("女中年", "中年女", "阿姨", "成熟女")
+    ),
+    AutoTagRule(
+        tagPrefix = "女老年",
+        tagNamePrefix = "女/女老年",
+        sortRank = 24,
+        keywords = listOf("女老年", "老年女", "奶奶", "老婆婆", "老奶奶")
+    ),
+
+    AutoTagRule(
+        tagPrefix = "男童",
+        tagNamePrefix = "男/男童",
+        sortRank = 30,
+        keywords = listOf("男童", "男孩", "小男孩")
+    ),
+    AutoTagRule(
+        tagPrefix = "少年",
+        tagNamePrefix = "男/少年",
+        sortRank = 31,
+        keywords = listOf("少年", "男少年")
+    ),
+    AutoTagRule(
+        tagPrefix = "男青年",
+        tagNamePrefix = "男/男青年",
+        sortRank = 32,
+        keywords = listOf("男青年", "青年男", "年轻男", "男生", "男性青年")
+    ),
+    AutoTagRule(
+        tagPrefix = "男中年",
+        tagNamePrefix = "男/男中年",
+        sortRank = 33,
+        keywords = listOf("男中年", "中年男", "叔叔", "成熟男")
+    ),
+    AutoTagRule(
+        tagPrefix = "男老年",
+        tagNamePrefix = "男/男老年",
+        sortRank = 34,
+        keywords = listOf("男老年", "老年男", "爷爷", "老爷爷")
+    )
+)
+
+private fun autoTagRuleByText(text: String): AutoTagRule? {
+    val normalized = normalizeAutoTagText(text).lowercase()
+
+    return AUTO_TAG_RULES.firstOrNull { rule ->
+        rule.keywords.any { keyword ->
+            normalized.contains(normalizeAutoTagText(keyword).lowercase())
+        }
+    }
+}
+
+private fun autoTagRuleByGroupName(groupName: String): AutoTagRule? {
+    val normalized = normalizeAutoTagText(groupName).lowercase()
+
+    // 先按具体关键词命中
+    autoTagRuleByText(groupName)?.let { return it }
+
+    // 分组名只有“女”时，只做兜底，不抢少女/女童/女中年/女老年
+    if (normalized.contains("女")) {
+        return AUTO_TAG_RULES.first {
+            it.tagNamePrefix == "女/女青年"
+        }
+    }
+
+    // 分组名只有“男”时，只做兜底
+    if (normalized.contains("男")) {
+        return AUTO_TAG_RULES.first {
+            it.tagNamePrefix == "男/男青年"
+        }
+    }
+
+    return null
+}
+
+private fun getAutoTagPersonality(systemTts: SystemTtsV2): String {
+    val displayName = systemTts.displayName
+        .substringBefore("（")
+        .substringBefore("(")
+        .trim()
+
+    if (displayName.isNotBlank()) {
+        return displayName
+    }
+
+    val config = systemTts.config as? TtsConfigurationDTO
+
+    return config
+        ?.speechRule
+        ?.tagData
+        ?.get("personality")
+        ?.toString()
+        ?.trim()
+        .orEmpty()
+}
+
+
+private fun normalizeAutoTagText(text: String): String {
+    return text
+        .replace("\u200B", "")
+        .replace("\u200C", "")
+        .replace("\u200D", "")
+        .replace("\uFEFF", "")
+        .replace("【", "")
+        .replace("】", "")
+        .replace("[", "")
+        .replace("]", "")
+        .replace(" ", "")
+        .trim()
+}
+
+private fun findAutoTagKey(
+    speechRule: SpeechRule,
+    rule: AutoTagRule,
+    index: Int,
+): String? {
+    val number = "%02d".format(index + 1)
+
+    val expectedCore = if (rule.needNumber) {
+        "${rule.tagNamePrefix}$number"
+    } else {
+        rule.tagNamePrefix
+    }
+
+    val expectedShort = if (rule.needNumber) {
+        "${rule.tagPrefix}$number"
+    } else {
+        rule.tagPrefix
+    }
+
+    val nExpectedCore = normalizeAutoTagText(expectedCore)
+    val nExpectedShort = normalizeAutoTagText(expectedShort)
+
+    return speechRule.tags.entries.firstOrNull { entry ->
+        val key = entry.key
+        val value = entry.value
+
+        val nKey = normalizeAutoTagText(key)
+        val nValue = normalizeAutoTagText(value)
+
+        key == expectedShort ||
+                key == expectedCore ||
+                nKey == nExpectedShort ||
+                nKey == nExpectedCore ||
+                nValue == nExpectedCore ||
+                nValue == nExpectedShort ||
+                nValue.startsWith(nExpectedCore) ||
+                nValue.startsWith(nExpectedShort) ||
+                nValue.contains(nExpectedCore) ||
+                nValue.contains(nExpectedShort)
+    }?.key
+}
+
+private fun findSpeechRuleForAutoTag(
+    oldRuleId: String,
+    autoRule: AutoTagRule,
+    index: Int,
+): SpeechRule? {
+    val oldRule = dbm.speechRuleDao.getByRuleId(oldRuleId)
+
+    if (oldRule != null && findAutoTagKey(oldRule, autoRule, index) != null) {
+        return oldRule
+    }
+
+    return dbm.speechRuleDao.allEnabled.firstOrNull { rule ->
+        findAutoTagKey(rule, autoRule, index) != null
+    }
+}
+
+private fun buildAutoTagData(
+    speechRule: SpeechRule,
+    tag: String,
+    oldTagData: Map<String, String>,
+    personality: String,
+): Map<String, String> {
+    val defs = speechRule.tagsData[tag].orEmpty()
+    val allowedKeys = defs.map { it.key }.toSet()
+
+    val result = oldTagData.toMutableMap()
+
+    defs.forEach { defTag ->
+        val key = defTag.key
+        val defaultValue = defTag.value["default"].orEmpty()
+
+        if (defaultValue.isNotBlank() && result[key].isNullOrBlank()) {
+            result[key] = defaultValue
+        }
+    }
+
+    if (allowedKeys.isEmpty() || allowedKeys.contains("personality")) {
+        result["personality"] = personality
+    }
+
+    return if (allowedKeys.isEmpty()) {
+        result
+    } else {
+        result.filterKeys { it in allowedKeys }
+    }
+}
+
+private fun normalizeVoiceIdForMatch(raw: String): String {
+    return raw
+        .trim()
+        .removePrefix("clone_")
+        .replace(Regex("^ggref_\\d+_"), "")
+        .replace(Regex("[()（）\\s/\\\\.:：，,;；#?&=\\[\\]{}]+"), "_")
+        .replace(Regex("_+"), "_")
+        .trim('_')
+        .lowercase()
+}
+
+private fun extractCloneVoiceNamesFromPluginCode(code: String): List<String> {
+    val markerIndex = code.indexOf("CLONE_VOICE_NAMES")
+    if (markerIndex < 0) return emptyList()
+
+    val openIndex = code.indexOf("[", markerIndex)
+    if (openIndex < 0) return emptyList()
+
+    val closeIndex = code.indexOf("];", openIndex)
+    if (closeIndex < 0) return emptyList()
+
+    val block = code.substring(openIndex + 1, closeIndex)
+
+    return Regex("\"((?:\\\\.|[^\"])*)\"|'((?:\\\\.|[^'])*)'")
+        .findAll(block)
+        .mapNotNull { match ->
+            val value = match.groups[1]?.value ?: match.groups[2]?.value
+            value
+                ?.replace("\\\"", "\"")
+                ?.replace("\\'", "'")
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
+        }
+        .toList()
+}
+
+private fun safeVoiceIdAsGgref(name: String, index: Int): String {
+    var s = name
+        .replace(Regex("[()（）\\s/\\\\.:：，,;；#?&=\\[\\]{}]+"), "_")
+        .replace(Regex("_+"), "_")
+        .trim('_')
+
+    if (s.length > 70) {
+        s = s.substring(0, 70)
+    }
+
+    return "ggref_${index}_$s"
+}
+
+private fun safeVoiceIdAsClone(name: String): String {
+    return "clone_" + name.replace(Regex("[()]"), "_")
+}
+
+private fun buildTargetPluginVoiceIds(targetPlugin: Plugin): List<String> {
+    val code = targetPlugin.code.toString()
+    val names = extractCloneVoiceNamesFromPluginCode(code)
+    if (names.isEmpty()) return emptyList()
+
+    val usesGgref = code.contains("ggref_")
+    val usesClone = code.contains("clone_")
+
+    val result = mutableListOf<String>()
+
+    names.forEachIndexed { index, name ->
+        if (usesGgref) {
+            result += safeVoiceIdAsGgref(name, index)
+        }
+
+        if (usesClone || !usesGgref) {
+            result += safeVoiceIdAsClone(name)
+        }
+
+        val cloneId = safeVoiceIdAsClone(name)
+        if (cloneId !in result) {
+            result += cloneId
+        }
+    }
+
+    return result.distinct()
+}
+
+private fun extractVoiceNumber(raw: String): String {
+    val normalized = normalizeVoiceIdForMatch(raw)
+    return Regex("\\d{3,4}").find(normalized)?.value.orEmpty()
+}
+
+private fun resolveVoiceIdForCurrentPlugin(
+    displayName: String,
+    oldVoiceId: String,
+    targetPlugin: Plugin,
+): String {
+    val targetVoiceIds = buildTargetPluginVoiceIds(targetPlugin)
+    if (targetVoiceIds.isEmpty()) return oldVoiceId
+
+    if (oldVoiceId in targetVoiceIds) return oldVoiceId
+
+    val displayNorm = normalizeVoiceIdForMatch(displayName)
+    val oldNorm = normalizeVoiceIdForMatch(oldVoiceId)
+
+    // 1. 优先用配置显示名完整匹配
+    targetVoiceIds.firstOrNull { newId ->
+        normalizeVoiceIdForMatch(newId) == displayNorm
+    }?.let { return it }
+
+    // 2. 用旧 voice 完整匹配
+    targetVoiceIds.firstOrNull { newId ->
+        normalizeVoiceIdForMatch(newId) == oldNorm
+    }?.let { return it }
+
+    // 3. 用显示名里的编号匹配，比如 1060 / 0868 / 1591
+    val displayNumber = extractVoiceNumber(displayName)
+    if (displayNumber.isNotBlank()) {
+        targetVoiceIds.firstOrNull { newId ->
+            extractVoiceNumber(newId) == displayNumber
+        }?.let { return it }
+    }
+
+    // 4. 用旧 voice 里的编号匹配
+    val oldNumber = extractVoiceNumber(oldVoiceId)
+    if (oldNumber.isNotBlank()) {
+        targetVoiceIds.firstOrNull { newId ->
+            extractVoiceNumber(newId) == oldNumber
+        }?.let { return it }
+    }
+
+    // 5. 包含匹配兜底
+    targetVoiceIds.firstOrNull { newId ->
+        val newNorm = normalizeVoiceIdForMatch(newId)
+        displayNorm.isNotBlank() && (displayNorm.contains(newNorm) || newNorm.contains(displayNorm))
+    }?.let { return it }
+
+    targetVoiceIds.firstOrNull { newId ->
+        val newNorm = normalizeVoiceIdForMatch(newId)
+        oldNorm.isNotBlank() && (oldNorm.contains(newNorm) || newNorm.contains(oldNorm))
+    }?.let { return it }
+
+    return oldVoiceId
+}
+
+
+
+private fun resolvePluginSampleRate(targetPlugin: Plugin): Int {
+    val code = targetPlugin.code.toString()
+    val markerIndex = code.indexOf("getAudioSampleRate")
+    if (markerIndex < 0) return 16000
+
+    val area = code.substring(markerIndex, minOf(code.length, markerIndex + 800))
+    return Regex("return\\s+(\\d{4,6})")
+        .find(area)
+        ?.groupValues
+        ?.getOrNull(1)
+        ?.toIntOrNull()
+        ?.takeIf { it > 0 }
+        ?: 16000
+}
+
+private fun resolvePluginNeedDecode(targetPlugin: Plugin): Boolean {
+    val code = targetPlugin.code.toString()
+    val markerIndex = code.indexOf("getAudioFormat")
+    if (markerIndex < 0) return true
+
+    val area = code.substring(markerIndex, minOf(code.length, markerIndex + 800))
+    val format = Regex("return\\s+['\\\"]([^'\\\"]+)['\\\"]")
+        .find(area)
+        ?.groupValues
+        ?.getOrNull(1)
+        ?.trim()
+        ?.lowercase()
+        .orEmpty()
+
+    return when {
+        format.contains("raw") -> false
+        format.contains("pcm") -> false
+        else -> true
+    }
+}
+
+
+private fun SystemTtsV2.pluginIdOrEmpty(): String {
+    val config = config as? TtsConfigurationDTO ?: return ""
+    val source = config.source as? PluginTtsSource ?: return ""
+    return source.pluginId
+}
+
+private fun flattenGroupOptions(
+    nodes: List<GroupTreeNode>,
+    level: Int = 0,
+): List<GroupMoveOption> {
+    return nodes.flatMap { node ->
+        listOf(GroupMoveOption(node.group, level)) +
+                flattenGroupOptions(node.children, level + 1)
+    }
+}
+
+private fun flattenSearchTtsResults(
+    nodes: List<GroupTreeNode>,
+    pluginNameMap: Map<String, String>,
+    parentPath: String = "",
+): List<SearchTtsResult> {
+    return nodes.flatMap { node ->
+        val currentPath =
+            if (parentPath.isBlank()) node.group.name else "$parentPath / ${node.group.name}"
+
+        node.list.map { tts ->
+            val pluginId = tts.pluginIdOrEmpty()
+
+            SearchTtsResult(
+                group = node.group,
+                groupPath = currentPath,
+                pluginName = pluginNameMap[pluginId].orEmpty(),
+                pluginId = pluginId,
+                tts = tts
+            )
+        } + flattenSearchTtsResults(
+            nodes = node.children,
+            pluginNameMap = pluginNameMap,
+            parentPath = currentPath
+        )
+    }
+}
+
+
+
+private const val AI_GENERATE_CONFIG_API_FILE_NAME = "ai_generate_config_api.txt"
+
+private fun aiGenerateConfigApiFile(context: Context): File {
+    return File(context.filesDir, AI_GENERATE_CONFIG_API_FILE_NAME)
+}
+
+private fun readAiGenerateConfigApiText(context: Context): String {
+    val file = aiGenerateConfigApiFile(context)
+    return if (file.exists() && file.isFile) {
+        file.readText().trim()
+    } else {
+        ""
+    }
+}
+
+private fun writeAiGenerateConfigApiText(context: Context, text: String) {
+    val file = aiGenerateConfigApiFile(context)
+    file.parentFile?.mkdirs()
+    file.writeText(text.trim())
+}
+
+
+private data class AiRuleRoleTag(
+    val groupName: String,
+    val displayName: String,
+    val tag: String,
+    val tagName: String,
+    val index: Int,
+)
+
+private fun normalizeAiTagName(raw: String): String {
+    return raw
+        .replace("【", "")
+        .replace("】", "")
+        .replace("[", "")
+        .replace("]", "")
+        .replace("（", "")
+        .replace("）", "")
+        .trim()
+}
+
+private fun parseAiRuleRoleTags(rule: SpeechRule): List<AiRuleRoleTag> {
+    val result = mutableListOf<AiRuleRoleTag>()
+
+    val roleGroups = listOf(
+        "女童",
+        "男童",
+        "少女",
+        "少年",
+        "女青年",
+        "男青年",
+        "女中年",
+        "男中年",
+        "女老年",
+        "男老年"
+    )
+
+    rule.tags.forEach { (tag, tagNameRaw) ->
+        val tagName = normalizeAiTagName(tagNameRaw)
+        val lowerTag = tag.lowercase()
+
+        if (tagName.isBlank()) return@forEach
+        if (lowerTag == "narration" || lowerTag == "narrator") return@forEach
+        if (lowerTag == "duihua" || lowerTag == "duihuaa" || lowerTag == "duihuab") return@forEach
+        if (lowerTag.startsWith("localsound")) return@forEach
+        if (tagName.contains("旁白")) return@forEach
+        if (tagName.contains("音效")) return@forEach
+        if (tagName.contains("括号")) return@forEach
+
+        val matchedGroup = roleGroups.firstOrNull { group ->
+            tagName.contains(group)
+        } ?: return@forEach
+
+        val index = Regex("(\\d{1,3})")
+            .find(tagName)
+            ?.value
+            ?.toIntOrNull()
+            ?: 0
+
+        val gender = when {
+            matchedGroup.startsWith("女") || matchedGroup == "少女" -> "女"
+            matchedGroup.startsWith("男") || matchedGroup == "少年" -> "男"
+            else -> ""
+        }
+
+        val displayName = if (tagName.contains("/")) {
+            tagName
+        } else if (gender.isNotBlank()) {
+            "$gender/$matchedGroup" + if (index > 0) "%02d".format(index) else ""
+        } else {
+            tagName
+        }
+
+        result += AiRuleRoleTag(
+            groupName = matchedGroup,
+            displayName = displayName,
+            tag = tag,
+            tagName = tagNameRaw,
+            index = index
+        )
+    }
+
+    return result.sortedWith(
+        compareBy<AiRuleRoleTag> { it.groupName }
+            .thenBy { it.index }
+            .thenBy { it.displayName }
+    )
+}
+
+
+private data class AiPluginVoicePreview(
+    val voiceId: String,
+    val voiceName: String,
+)
+
+private fun extractAiPluginVoicePreview(pluginCode: String): List<AiPluginVoicePreview> {
+    val result = mutableListOf<AiPluginVoicePreview>()
+
+    val cloneMarker = pluginCode.indexOf("CLONE_VOICE_NAMES")
+    if (cloneMarker >= 0) {
+        val openIndex = pluginCode.indexOf("[", cloneMarker)
+        val closeIndex = pluginCode.indexOf("];", openIndex)
+        if (openIndex >= 0 && closeIndex > openIndex) {
+            val block = pluginCode.substring(openIndex + 1, closeIndex)
+
+            Regex("\"((?:\\\\.|[^\"])*)\"|'((?:\\\\.|[^'])*)'")
+                .findAll(block)
+                .mapNotNull { match ->
+                    val value = match.groups[1]?.value ?: match.groups[2]?.value
+                    value
+                        ?.replace("\\\"", "\"")
+                        ?.replace("\\'", "'")
+                        ?.trim()
+                        ?.takeIf { it.isNotBlank() }
+                }
+                .forEachIndexed { index, name ->
+                    val safeName = name
+                        .replace(Regex("[()（）\\s/\\\\.:：，,;；#?&=\\[\\]{}]+"), "_")
+                        .replace(Regex("_+"), "_")
+                        .trim('_')
+                        .let { if (it.length > 70) it.substring(0, 70) else it }
+
+                    result += AiPluginVoicePreview(
+                        voiceId = "ggref_${index}_$safeName",
+                        voiceName = name
+                    )
+                }
+
+            return result.distinctBy { it.voiceId }
+        }
+    }
+
+    val voiceObjectMarker = pluginCode.indexOf("'VOICES'")
+        .takeIf { it >= 0 }
+        ?: pluginCode.indexOf("\"VOICES\"")
+            .takeIf { it >= 0 }
+        ?: pluginCode.indexOf("VOICES")
+
+    if (voiceObjectMarker >= 0) {
+        val area = pluginCode.substring(voiceObjectMarker, minOf(pluginCode.length, voiceObjectMarker + 12000))
+        Regex("['\\\"]([^'\\\"]{2,120})['\\\"]\\s*:\\s*['\\\"]([^'\\\"]{2,160})['\\\"]")
+            .findAll(area)
+            .take(500)
+            .forEach { m ->
+                result += AiPluginVoicePreview(
+                    voiceId = m.groupValues[1],
+                    voiceName = m.groupValues[2]
+                )
+            }
+    }
+
+    return result.distinctBy { it.voiceId }
+}
+
+
+private fun classifyAiVoiceGroup(text: String): String? {
+    val value = text.lowercase()
+
+    return when {
+        value.contains("女童") ||
+            value.contains("幼女") ||
+            value.contains("女孩") ||
+            value.contains("儿童") && value.contains("女") -> "女童"
+
+        value.contains("男童") ||
+            value.contains("男孩") ||
+            value.contains("正太") ||
+            value.contains("儿童") && value.contains("男") -> "男童"
+
+        value.contains("少女") ||
+            value.contains("女少年") -> "少女"
+
+        value.contains("少年") ||
+            value.contains("男少年") -> "少年"
+
+        value.contains("女青年") ||
+            value.contains("女青") ||
+            value.contains("御姐") ||
+            value.contains("少御") -> "女青年"
+
+        value.contains("男青年") ||
+            value.contains("男青") ||
+            value.contains("青年") && value.contains("男") -> "男青年"
+
+        value.contains("女中年") ||
+            value.contains("女中青") ||
+            value.contains("中年") && value.contains("女") -> "女中年"
+
+        value.contains("男中年") ||
+            value.contains("男中青") ||
+            value.contains("青叔") ||
+            value.contains("大叔") ||
+            value.contains("中年") && value.contains("男") -> "男中年"
+
+        value.contains("女老年") ||
+            value.contains("女中老") ||
+            value.contains("老年") && value.contains("女") ||
+            value.contains("老妇") ||
+            value.contains("奶奶") -> "女老年"
+
+        value.contains("男老年") ||
+            value.contains("男中老") ||
+            value.contains("老年") && value.contains("男") ||
+            value.contains("老者") ||
+            value.contains("老头") ||
+            value.contains("爷爷") -> "男老年"
+
+        else -> null
+    }
+}
+
+
+private fun fetchAiPluginVoicesDynamic(
+    context: Context,
+    plugin: Plugin,
+): List<AiPluginVoicePreview> {
+    val source = PluginTtsSource(
+        locale = "zh-CN",
+        voice = "",
+        pluginId = plugin.pluginId
+    )
+
+    val engine = TtsPluginUiEngineV2(context, plugin).apply {
+        eval()
+        this.source = source
+        onLoadData()
+    }
+
+    val locales = runCatching {
+        engine.getLocales().toList()
+    }.getOrDefault(emptyList())
+
+    val locale = locales.firstOrNull { it.first == "zh-CN" }?.first
+        ?: locales.firstOrNull()?.first
+        ?: "zh-CN"
+
+    return engine.getVoices(locale)
+        .map {
+            AiPluginVoicePreview(
+                voiceId = it.id,
+                voiceName = it.name
+            )
+        }
+        .distinctBy { it.voiceId }
+}
+
+
+
+private fun aiPluginShortName(pluginName: String): String {
+    val name = pluginName.trim()
+
+    return when {
+        name.contains("呱呱", ignoreCase = true) -> "呱呱"
+        name.contains("mimo", ignoreCase = true) -> "MiMo"
+        name.contains("微软", ignoreCase = true) -> "微软"
+        name.contains("火山", ignoreCase = true) -> "火山"
+        name.contains("豆包", ignoreCase = true) -> "豆包"
+        name.contains("猫箱", ignoreCase = true) -> "猫箱"
+        name.contains("猫", ignoreCase = true) -> "猫箱"
+        name.isNotBlank() -> name.take(4)
+        else -> "插件"
+    }
+}
+
+
+private data class AiGenerateConfigMatch(
+    val role: AiRuleRoleTag,
+    val voice: AiPluginVoicePreview?,
+)
+
+private fun buildAiGenerateConfigMatches(
+    rule: SpeechRule?,
+    voices: List<AiPluginVoicePreview>,
+): List<AiGenerateConfigMatch> {
+    if (rule == null || voices.isEmpty()) return emptyList()
+
+    val groupOrder = listOf(
+        "女童",
+        "男童",
+        "少女",
+        "少年",
+        "女青年",
+        "男青年",
+        "女中年",
+        "男中年",
+        "女老年",
+        "男老年"
+    )
+
+    val roleGrouped = parseAiRuleRoleTags(rule)
+        .groupBy { it.groupName }
+
+    val voiceGrouped = voices
+        .mapNotNull { voice ->
+            val group = classifyAiVoiceGroup("${voice.voiceName} ${voice.voiceId}") ?: return@mapNotNull null
+            group to voice
+        }
+        .groupBy({ it.first }, { it.second })
+
+    val result = mutableListOf<AiGenerateConfigMatch>()
+
+    groupOrder.forEach { group ->
+        val roles = roleGrouped[group]
+            .orEmpty()
+            .sortedWith(
+                compareBy<AiRuleRoleTag> { it.index }
+                    .thenBy { it.displayName }
+            )
+
+        val candidates = voiceGrouped[group].orEmpty()
+
+        if (roles.isEmpty() || candidates.isEmpty()) return@forEach
+
+        // 关键：每个分组只生成“插件候选声音数量”这么多条，
+        // 并且从规则标签池的 01 开始取，不再生成到 91、92...
+        val count = minOf(roles.size, candidates.size)
+
+        for (i in 0 until count) {
+            result += AiGenerateConfigMatch(
+                role = roles[i],
+                voice = candidates[i]
+            )
+        }
+    }
+
+    return result
+}
+
+
+private fun deleteAiGenerateGroupTreeByName(rootName: String) {
+    val root = dbm.systemTtsV2.allGroup.firstOrNull {
+        it.parentGroupId == 0L && it.name == rootName
+    } ?: return
+
+    fun deleteGroupTree(group: SystemTtsGroup) {
+        val children = dbm.systemTtsV2.allGroup.filter { it.parentGroupId == group.id }
+        children.forEach { child ->
+            deleteGroupTree(child)
+        }
+
+        val ttsList = dbm.systemTtsV2.getTtsListByGroupId(group.id)
+        if (ttsList.isNotEmpty()) {
+            dbm.systemTtsV2.delete(*ttsList.toTypedArray())
+        }
+
+        dbm.systemTtsV2.deleteGroup(group)
+    }
+
+    deleteGroupTree(root)
+}
+
+
+private fun findOrCreateAiGenerateGroup(
+    name: String,
+    parentGroupId: Long,
+    order: Int,
+): SystemTtsGroup {
+    val exists = dbm.systemTtsV2.allGroup.firstOrNull {
+        it.parentGroupId == parentGroupId && it.name == name
+    }
+
+    if (exists != null) return exists
+
+    val group = SystemTtsGroup(
+        id = System.currentTimeMillis() + order,
+        name = name,
+        order = order,
+        parentGroupId = parentGroupId,
+        isExpanded = true
+    )
+
+    dbm.systemTtsV2.insertGroup(group)
+    return group
+}
+
+
+
+private fun buildAiVoiceClassifyPrompt(
+    pluginName: String,
+    voices: List<AiPluginVoicePreview>,
+): String {
+    val voiceText = voices
+        .take(500)
+        .joinToString("\n") { voice ->
+            "${voice.voiceId} | ${voice.voiceName}"
+        }
+
+    return """
+你是中文有声书 TTS 声音分类助手。
+请根据 voiceName 的语义判断每个声音属于哪一种角色类型。
+
+只允许使用这些 group：
+女童、男童、少女、少年、女青年、男青年、女中年、男中年、女老年、男老年、unknown。
+
+分类语义参考：
+- 女童：女童、幼女、小女孩、儿童女声、稚嫩女声、萝莉、童声女。
+- 男童：男童、男孩、正太、儿童男声、稚嫩男声、童声男。
+- 少女：少女、女少年、青春少女、灵动少女、元气少女、甜美少女。
+- 少年：少年、男少年、青涩少年、清亮少年、热血少年。
+- 女青年：女青年、青年女声、御姐、少御、女主、女配、年轻女性、清冷女声、甜美女声、成熟女声但未到中年。
+- 男青年：男青年、青年男声、男主、公子、书生、年轻男性、磁性男声、清朗男声、阳光男声。
+- 女中年：女中年、熟女、母亲、夫人、中年女性、端庄女声、成熟女性、慈爱女声。
+- 男中年：男中年、大叔、青叔、成熟男性、父亲、将军、老板、稳重男声、厚重男声。
+- 女老年：女老年、老妇、奶奶、老妪、慈祥老人女声、苍老女声。
+- 男老年：男老年、老者、爷爷、老头、长者、苍老男声、老年男性。
+- unknown：完全无法判断性别年龄的声音。
+
+要求：
+1. 必须只输出 JSON。
+2. JSON key 必须是 voiceId 原文。
+3. group 必须是允许列表之一。
+4. 不要解释，不要 Markdown。
+
+插件名称：
+$pluginName
+
+声音列表：
+$voiceText
+
+输出格式：
+{
+  "voice_id_1": {"group": "女青年"},
+  "voice_id_2": {"group": "男中年"},
+  "voice_id_3": {"group": "unknown"}
+}
+""".trimIndent()
+}
+
+private fun callAiClassifyVoiceGroupsApi(
+    context: Context,
+    pluginName: String,
+    voices: List<AiPluginVoicePreview>,
+): Map<String, String> {
+    val cfg = parseAiGenerateApiConfig(context) ?: return emptyMap()
+    if (voices.isEmpty()) return emptyMap()
+
+    val prompt = buildAiVoiceClassifyPrompt(pluginName, voices)
+
+    return runCatching {
+        val body = JSONObject()
+            .put("model", cfg.model)
+            .put(
+                "messages",
+                JSONArray()
+                    .put(
+                        JSONObject()
+                            .put("role", "system")
+                            .put("content", "你只输出合法 JSON。")
+                    )
+                    .put(
+                        JSONObject()
+                            .put("role", "user")
+                            .put("content", prompt)
+                    )
+            )
+            .put("temperature", 0.1)
+
+        val conn = URL(cfg.endpoint).openConnection() as java.net.HttpURLConnection
+        conn.requestMethod = "POST"
+        conn.connectTimeout = 15000
+        conn.readTimeout = 30000
+        conn.doOutput = true
+        conn.setRequestProperty("Content-Type", "application/json")
+        conn.setRequestProperty("Authorization", "Bearer ${cfg.key}")
+
+        OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use {
+            it.write(body.toString())
+        }
+
+        val responseText = if (conn.responseCode in 200..299) {
+            conn.inputStream.bufferedReader().use { it.readText() }
+        } else {
+            conn.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+        }
+
+        if (conn.responseCode !in 200..299) {
+            aiGenerateMatchLastError = "AI声音分类 HTTP ${conn.responseCode}: " + responseText.take(300)
+            return@runCatching emptyMap<String, String>()
+        }
+
+        val root = JSONObject(responseText)
+        val content = root
+            .getJSONArray("choices")
+            .getJSONObject(0)
+            .getJSONObject("message")
+            .getString("content")
+
+        val jsonStart = content.indexOf("{")
+        val jsonEnd = content.lastIndexOf("}")
+
+        if (jsonStart < 0 || jsonEnd <= jsonStart) {
+            aiGenerateMatchLastError = "AI声音分类返回内容不是 JSON：" + content.take(300)
+            return@runCatching emptyMap<String, String>()
+        }
+
+        val obj = JSONObject(content.substring(jsonStart, jsonEnd + 1))
+        val allowed = setOf(
+            "女童",
+            "男童",
+            "少女",
+            "少年",
+            "女青年",
+            "男青年",
+            "女中年",
+            "男中年",
+            "女老年",
+            "男老年"
+        )
+
+        val result = mutableMapOf<String, String>()
+
+        obj.keys().forEach { voiceId ->
+            val item = obj.optJSONObject(voiceId)
+            val group = item?.optString("group").orEmpty().trim()
+
+            if (group in allowed) {
+                result[voiceId] = group
+            }
+        }
+
+        result
+    }.getOrElse {
+        aiGenerateMatchLastError = it.message ?: "AI声音分类异常"
+        emptyMap()
+    }
+}
+
+
+private fun callAiClassifyVoiceGroupsApiBatched(
+    context: Context,
+    pluginName: String,
+    voices: List<AiPluginVoicePreview>,
+    batchSize: Int = 30,
+): Map<String, String> {
+    if (voices.isEmpty()) return emptyMap()
+
+    val result = mutableMapOf<String, String>()
+    val chunks = voices.chunked(batchSize)
+
+    chunks.forEachIndexed { index, chunk ->
+        val one = callAiClassifyVoiceGroupsApi(
+            context = context,
+            pluginName = "$pluginName 批次${index + 1}/${chunks.size}",
+            voices = chunk
+        )
+
+        result.putAll(one)
+    }
+
+    return result
+}
+
+
+private fun buildAiVoiceGroupMapWithAi(
+    context: Context,
+    pluginName: String,
+    voices: List<AiPluginVoicePreview>,
+): Map<String, String> {
+    val local = mutableMapOf<String, String>()
+    val unclassified = mutableListOf<AiPluginVoicePreview>()
+
+    voices.forEach { voice ->
+        val group = classifyAiVoiceGroup("${voice.voiceName} ${voice.voiceId}")
+        if (group != null) {
+            local[voice.voiceId] = group
+        } else {
+            unclassified += voice
+        }
+    }
+
+    if (unclassified.isEmpty()) return local
+
+    val aiGroups = callAiClassifyVoiceGroupsApiBatched(
+        context = context,
+        pluginName = pluginName,
+        voices = unclassified,
+        batchSize = 30
+    )
+
+    return local + aiGroups
+}
+
+private fun buildAiGenerateConfigMatchesWithVoiceGroupMap(
+    rule: SpeechRule?,
+    voices: List<AiPluginVoicePreview>,
+    voiceGroupMap: Map<String, String>,
+): List<AiGenerateConfigMatch> {
+    if (rule == null || voices.isEmpty()) return emptyList()
+
+    val groupOrder = listOf(
+        "女童",
+        "男童",
+        "少女",
+        "少年",
+        "女青年",
+        "男青年",
+        "女中年",
+        "男中年",
+        "女老年",
+        "男老年"
+    )
+
+    val roleGrouped = parseAiRuleRoleTags(rule).groupBy { it.groupName }
+
+    val voiceGrouped = voices
+        .mapNotNull { voice ->
+            val group = voiceGroupMap[voice.voiceId] ?: return@mapNotNull null
+            group to voice
+        }
+        .groupBy({ it.first }, { it.second })
+
+    val result = mutableListOf<AiGenerateConfigMatch>()
+
+    groupOrder.forEach { group ->
+        val roles = roleGrouped[group]
+            .orEmpty()
+            .sortedWith(
+                compareBy<AiRuleRoleTag> { it.index }
+                    .thenBy { it.displayName }
+            )
+
+        val candidates = voiceGrouped[group].orEmpty()
+        if (roles.isEmpty() || candidates.isEmpty()) return@forEach
+
+        val count = minOf(roles.size, candidates.size)
+
+        for (i in 0 until count) {
+            result += AiGenerateConfigMatch(
+                role = roles[i],
+                voice = candidates[i]
+            )
+        }
+    }
+
+    return result
+}
+
+
+private fun buildAiGenerateConfigMatchesWithAi(
+    context: Context,
+    rule: SpeechRule?,
+    pluginName: String,
+    voices: List<AiPluginVoicePreview>,
+): List<AiGenerateConfigMatch> {
+    if (rule == null || voices.isEmpty()) {
+        return emptyList()
+    }
+
+    // 正确流程：
+    // 1. 本地先分类声音
+    // 2. 只有未归类声音交给 AI 判断分组
+    // 3. 合并 本地分类 + AI 补充分组
+    // 4. APK 本地按每组从 01 开始生成配置
+    val voiceGroupMap = buildAiVoiceGroupMapWithAi(
+        context = context,
+        pluginName = pluginName,
+        voices = voices
+    )
+
+    val semanticResult = buildAiGenerateConfigMatchesWithVoiceGroupMap(
+        rule = rule,
+        voices = voices,
+        voiceGroupMap = voiceGroupMap
+    )
+
+    return if (semanticResult.isNotEmpty()) {
+        aiGenerateMatchLastError = ""
+        semanticResult
+    } else {
+        buildAiGenerateConfigMatches(rule, voices)
+    }
+}
+
+
+private fun generateAiConfigListFromPreview(
+    context: Context,
+    rule: SpeechRule?,
+    plugin: Plugin?,
+    voices: List<AiPluginVoicePreview>,
+): Int {
+    if (rule == null || plugin == null || voices.isEmpty()) return 0
+
+    val matches = buildAiGenerateConfigMatchesWithAi(
+        context = context,
+        rule = rule,
+        pluginName = plugin.name,
+        voices = voices
+    ).filter { it.voice != null }
+
+    if (matches.isEmpty()) return 0
+
+    val pluginShort = aiPluginShortName(plugin.name)
+    val rootGroupName = "${pluginShort}声音组"
+
+    // 覆盖重建当前插件的声音组，避免旧配置、空分组、错误生成结果残留
+    deleteAiGenerateGroupTreeByName(rootGroupName)
+
+    val creatableMatches = matches
+    if (creatableMatches.isEmpty()) return 0
+
+    val rootGroup = findOrCreateAiGenerateGroup(
+        name = rootGroupName,
+        parentGroupId = 0L,
+        order = dbm.systemTtsV2.allGroup.size + 1
+    )
+
+    val groupOrder = listOf(
+        "女童",
+        "男童",
+        "少女",
+        "少年",
+        "女青年",
+        "男青年",
+        "女中年",
+        "男中年",
+        "女老年",
+        "男老年"
+    )
+
+    val childGroups = groupOrder.mapIndexed { index, groupName ->
+        groupName to findOrCreateAiGenerateGroup(
+            name = "$pluginShort$groupName",
+            parentGroupId = rootGroup.id,
+            order = index
+        )
+    }.toMap()
+
+    val sampleRate = resolvePluginSampleRate(plugin)
+    val needDecode = resolvePluginNeedDecode(plugin)
+
+    var created = 0
+    val now = System.currentTimeMillis()
+
+    val groupCurrentOrder = mutableMapOf<Long, Int>()
+
+    creatableMatches.forEachIndexed { idx, match ->
+        val role = match.role
+        val voice = match.voice ?: return@forEachIndexed
+        val group = childGroups[role.groupName] ?: return@forEachIndexed
+
+        val order = groupCurrentOrder[group.id] ?: dbm.systemTtsV2.getTtsListByGroupId(group.id).size
+        groupCurrentOrder[group.id] = order + 1
+
+        // 配置列表显示真实声音名；朗读规则标签仍保存在 speechRule.tagName 里
+        val display = voice.voiceName
+
+        val item = SystemTtsV2(
+            id = now + idx,
+            displayName = display,
+            groupId = group.id,
+            isEnabled = true,
+            order = order,
+            config = TtsConfigurationDTO(
+                speechRule = SpeechRuleInfo(
+                    tag = role.tag,
+                    tagRuleId = rule.ruleId,
+                    tagName = role.tagName
+                ),
+                audioFormat = BasicAudioFormat(
+                    sampleRate = sampleRate,
+                    isNeedDecode = needDecode
+                ),
+                source = PluginTtsSource(
+                    locale = "zh-CN",
+                    voice = voice.voiceId,
+                    pluginId = plugin.pluginId
+                )
+            )
+        )
+
+        dbm.systemTtsV2.insert(item)
+        created++
+    }
+
+    return created
+}
+
+
+
+private var aiGenerateMatchLastError: String = ""
+
+private data class AiGenerateApiConfig(
+    val endpoint: String,
+    val model: String,
+    val key: String,
+)
+
+private fun parseAiGenerateApiConfig(context: Context): AiGenerateApiConfig? {
+    val text = readAiGenerateConfigApiText(context).trim()
+    if (text.isBlank()) return null
+
+    val parts = text.split("@@")
+    if (parts.size >= 3) {
+        var endpoint = parts[0].trim()
+        if (!endpoint.endsWith("/chat/completions")) {
+            endpoint = endpoint.trimEnd('/') + "/chat/completions"
+        }
+
+        return AiGenerateApiConfig(
+            endpoint = endpoint,
+            model = parts[1].trim(),
+            key = parts[2].trim()
+        )
+    }
+
+    return null
+}
+
+private fun buildAiGenerateMatchPrompt(
+    rule: SpeechRule?,
+    pluginName: String,
+    voices: List<AiPluginVoicePreview>,
+): String {
+    if (rule == null) return ""
+
+    val roleTags = parseAiRuleRoleTags(rule)
+    if (roleTags.isEmpty() || voices.isEmpty()) return ""
+
+    val roleText = roleTags
+        .joinToString("\n") { role ->
+            "${role.displayName} | group=${role.groupName} | tag=${role.tag}"
+        }
+
+    val voiceText = voices
+        .take(500)
+        .joinToString("\n") { voice ->
+            "${voice.voiceId} | ${voice.voiceName}"
+        }
+
+    return """
+你是中文有声书 TTS 声音匹配助手。
+
+你的任务分两步：
+第一步：根据 voiceName 的语义判断每个声音属于什么角色类型。
+第二步：把朗读规则角色标签匹配到最合适的 voiceId。
+
+允许的角色类型只有：
+女童、男童、少女、少年、女青年、男青年、女中年、男中年、女老年、男老年。
+
+角色类型语义参考：
+- 女童：女童、幼女、小女孩、儿童女声、稚嫩女声、萝莉、童声女。
+- 男童：男童、男孩、正太、儿童男声、稚嫩男声、童声男。
+- 少女：少女、女少年、青春少女、灵动少女、元气少女、甜美少女、清脆少女。
+- 少年：少年、男少年、青涩少年、清亮少年、热血少年、阳光少年、清爽少年。
+- 女青年：女青年、青年女声、御姐、少御、女主、女配、年轻女性、清冷女声、甜美女声、成熟女声但未到中年。
+- 男青年：男青年、青年男声、男主、公子、书生、年轻男性、磁性男声、清朗男声、阳光男声、青叔偏年轻。
+- 女中年：女中年、熟女、母亲、夫人、中年女性、端庄女声、成熟女性、慈爱女声。
+- 男中年：男中年、大叔、青叔、成熟男性、父亲、将军、老板、稳重男声、厚重男声。
+- 女老年：女老年、老妇、奶奶、老妪、慈祥老人女声、苍老女声。
+- 男老年：男老年、老者、爷爷、老头、长者、苍老男声、老年男性。
+
+规则：
+1. 不要为旁白、narration、duihua、localSound、音效、括号发音人匹配声音。
+2. 每个角色标签必须选择一个 voiceId。
+3. 优先匹配性别和年龄段。
+4. 同一分组内尽量按顺序分配不同声音。
+5. 如果同组声音不够，可以复用最相近的同组声音。
+6. 如果声音名没有明确性别年龄，也要根据语义尽量判断，不要留空。
+7. 必须只输出 JSON，不要解释，不要 Markdown。
+8. JSON key 必须使用角色 displayName 原文。
+9. voiceId 必须来自“可用声音”列表，不能编造。
+
+插件名称：
+$pluginName
+
+角色标签：
+$roleText
+
+可用声音：
+$voiceText
+
+输出格式：
+{
+  "女/女童01": {"voiceId": "xxx", "group": "女童", "reason": "小女孩/童声语义匹配"},
+  "男/男青年01": {"voiceId": "yyy", "group": "男青年", "reason": "男青年/男主语义匹配"}
+}
+""".trimIndent()
+}
+
+private fun callAiGenerateMatchApi(
+    context: Context,
+    rule: SpeechRule?,
+    pluginName: String,
+    voices: List<AiPluginVoicePreview>,
+): Map<String, String> {
+    val cfg = parseAiGenerateApiConfig(context)
+        ?: run {
+            aiGenerateMatchLastError = "未设置 AI生成配置模型。请点击“模型设置”，填写：接口地址@@模型名@@API_KEY"
+            return emptyMap()
+        }
+    val prompt = buildAiGenerateMatchPrompt(rule, pluginName, voices)
+    if (prompt.isBlank()) {
+        aiGenerateMatchLastError = "构建 AI 匹配提示词失败：规则为空或声音列表为空"
+        return emptyMap()
+    }
+
+    return runCatching {
+        val body = JSONObject()
+            .put("model", cfg.model)
+            .put(
+                "messages",
+                JSONArray()
+                    .put(
+                        JSONObject()
+                            .put("role", "system")
+                            .put("content", "你只输出合法 JSON。")
+                    )
+                    .put(
+                        JSONObject()
+                            .put("role", "user")
+                            .put("content", prompt)
+                    )
+            )
+            .put("temperature", 0.1)
+
+        val conn = URL(cfg.endpoint).openConnection() as java.net.HttpURLConnection
+        conn.requestMethod = "POST"
+        conn.connectTimeout = 15000
+        conn.readTimeout = 30000
+        conn.doOutput = true
+        conn.setRequestProperty("Content-Type", "application/json")
+        conn.setRequestProperty("Authorization", "Bearer ${cfg.key}")
+
+        OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use {
+            it.write(body.toString())
+        }
+
+        val responseText = if (conn.responseCode in 200..299) {
+            conn.inputStream.bufferedReader().use { it.readText() }
+        } else {
+            conn.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+        }
+
+        if (conn.responseCode !in 200..299) {
+            aiGenerateMatchLastError = "HTTP ${conn.responseCode}: " + responseText.take(300)
+            return@runCatching emptyMap<String, String>()
+        }
+
+        val root = JSONObject(responseText)
+        val content = root
+            .getJSONArray("choices")
+            .getJSONObject(0)
+            .getJSONObject("message")
+            .getString("content")
+
+        val jsonStart = content.indexOf("{")
+        val jsonEnd = content.lastIndexOf("}")
+        if (jsonStart < 0 || jsonEnd <= jsonStart) {
+            aiGenerateMatchLastError = "AI 返回内容不是 JSON：" + content.take(300)
+            return@runCatching emptyMap<String, String>()
+        }
+
+        val obj = JSONObject(content.substring(jsonStart, jsonEnd + 1))
+        val result = mutableMapOf<String, String>()
+
+        obj.keys().forEach { key ->
+            val item = obj.optJSONObject(key)
+            val voiceId = item?.optString("voiceId").orEmpty()
+            if (voiceId.isNotBlank()) {
+                result[key] = voiceId
+            }
+        }
+
+        aiGenerateMatchLastError = ""
+        result
+    }.getOrElse {
+        aiGenerateMatchLastError = it.message ?: "AI 匹配异常"
+        emptyMap()
+    }
+}
+
+private fun buildAiGenerateConfigMatchPreviewTextWithAi(
+    context: Context,
+    rule: SpeechRule?,
+    pluginName: String,
+    voices: List<AiPluginVoicePreview>,
+): String {
+    if (rule == null) {
+        return "未找到已启用的完整朗读规则。"
+    }
+
+    if (pluginName.isBlank()) {
+        return "请先选择 TTS 插件。"
+    }
+
+    if (voices.isEmpty()) {
+        return "当前插件还没有可用声音列表。请先点击“📡 动态获取声音列表”，或换一个可解析声音列表的插件。"
+    }
+
+    val localVoiceGroupMap = voices.mapNotNull { voice ->
+        val group = classifyAiVoiceGroup("${voice.voiceName} ${voice.voiceId}") ?: return@mapNotNull null
+        voice.voiceId to group
+    }.toMap()
+
+    val localCount = localVoiceGroupMap.size
+    val unclassifiedCount = voices.size - localCount
+
+    // 这里只让 AI 分类“本地未归类声音”，不再让 AI 全量匹配 1000 个角色标签。
+    val voiceGroupMap = buildAiVoiceGroupMapWithAi(
+        context = context,
+        pluginName = pluginName,
+        voices = voices
+    )
+
+    val aiAddedCount = (voiceGroupMap.size - localCount).coerceAtLeast(0)
+
+    val matches = buildAiGenerateConfigMatchesWithVoiceGroupMap(
+        rule = rule,
+        voices = voices,
+        voiceGroupMap = voiceGroupMap
+    )
+
+    if (matches.isEmpty()) {
+        return buildAiGenerateConfigMatchPreviewText(
+            rule = rule,
+            pluginName = pluginName,
+            voices = voices
+        ) + "\n\n⚠️ AI 分类未生成有效匹配，已回退本地规则匹配。\n原因：$aiGenerateMatchLastError"
+    }
+
+    val pluginShortName = aiPluginShortName(pluginName)
+
+    val groupOrder = listOf(
+        "女童",
+        "男童",
+        "少女",
+        "少年",
+        "女青年",
+        "男青年",
+        "女中年",
+        "男中年",
+        "女老年",
+        "男老年"
+    )
+
+    val roleTags = parseAiRuleRoleTags(rule)
+    val grouped = matches.groupBy { it.role.groupName }
+
+    val sb = StringBuilder()
+
+    sb.append(pluginShortName).append("声音组").append("\n")
+    sb.append("规则角色池：").append(roleTags.size).append(" 条").append("\n")
+    sb.append("声音总数：").append(voices.size).append(" 个").append("\n")
+    sb.append("本地已分类：").append(localCount).append(" 个").append("\n")
+    sb.append("本地未归类：").append(unclassifiedCount).append(" 个").append("\n")
+
+    if (unclassifiedCount == 0) {
+        sb.append("✅ 本地规则已完成全部声音分类，无需 AI 补充。").append("\n")
+    } else if (aiAddedCount > 0) {
+        sb.append("✅ AI 补充分类：").append(aiAddedCount).append(" 个").append("\n")
+    } else if (aiGenerateMatchLastError.isNotBlank()) {
+        sb.append("⚠️ AI 分类未生效，已使用本地分类结果。").append("\n")
+        sb.append("原因：").append(aiGenerateMatchLastError).append("\n")
+    } else {
+        sb.append("⚠️ AI 没有补充新的可用分类，已使用本地分类结果。").append("\n")
+    }
+
+    sb.append("本次将生成：").append(matches.size).append(" 条标准 TTS 配置").append("\n")
+    sb.append("说明：每个分组从 01 开始，只按插件候选声音数量生成。").append("\n\n")
+
+    groupOrder.forEach { group ->
+        val items = grouped[group].orEmpty()
+        if (items.isEmpty()) return@forEach
+
+        sb.append("  ").append(pluginShortName).append(group).append("\n")
+
+        items.take(12).forEach { item ->
+            sb.append("    ")
+                .append(item.role.displayName)
+                .append(" → ")
+                .append(item.voice?.voiceName ?: "未匹配")
+                .append("\n")
+        }
+
+        if (items.size > 12) {
+            sb.append("    ... 还有 ").append(items.size - 12).append(" 条").append("\n")
+        }
+
+        sb.append("\n")
+    }
+
+    sb.append("说明：这是预览，还没有写入配置列表。确认后会创建插件声音组和各角色分组。")
+    return sb.toString()
+}
+
+
+private fun buildAiGenerateConfigMatchPreviewText(
+    rule: SpeechRule?,
+    pluginName: String,
+    voices: List<AiPluginVoicePreview>,
+): String {
+    if (rule == null) {
+        return "未找到已启用的完整朗读规则。"
+    }
+
+    val roleTags = parseAiRuleRoleTags(rule)
+    if (roleTags.isEmpty()) {
+        return "当前朗读规则没有可生成的角色标签。"
+    }
+
+    if (pluginName.isBlank()) {
+        return "请先选择 TTS 插件。"
+    }
+
+    if (voices.isEmpty()) {
+        return "当前插件还没有可用声音列表。请先点击“📡 动态获取声音列表”，或换一个可解析声音列表的插件。"
+    }
+
+    val matches = buildAiGenerateConfigMatches(rule, voices)
+
+    if (matches.isEmpty()) {
+        return "没有匹配到可生成的角色配置。请检查插件声音名称是否包含女童、男童、女青年等类型。"
+    }
+
+    val pluginShortName = aiPluginShortName(pluginName)
+
+    val groupOrder = listOf(
+        "女童",
+        "男童",
+        "少女",
+        "少年",
+        "女青年",
+        "男青年",
+        "女中年",
+        "男中年",
+        "女老年",
+        "男老年"
+    )
+
+    val grouped = matches.groupBy { it.role.groupName }
+
+    val sb = StringBuilder()
+
+    sb.append(pluginShortName).append("声音组").append("\n")
+    sb.append("规则角色池：").append(roleTags.size).append(" 条").append("\n")
+    sb.append("本次将生成：").append(matches.size).append(" 条标准 TTS 配置").append("\n")
+    sb.append("说明：每个分组从 01 开始，只按插件候选声音数量生成。").append("\n\n")
+
+    groupOrder.forEach { group ->
+        val items = grouped[group].orEmpty()
+        if (items.isEmpty()) return@forEach
+
+        sb.append("  ").append(pluginShortName).append(group).append("\n")
+
+        items.take(12).forEach { item ->
+            sb.append("    ")
+                .append(item.role.displayName)
+                .append(" → ")
+                .append(item.voice?.voiceName ?: "未匹配到候选声音")
+                .append("\n")
+        }
+
+        if (items.size > 12) {
+            sb.append("    ... 还有 ").append(items.size - 12).append(" 条").append("\n")
+        }
+
+        sb.append("\n")
+    }
+
+    sb.append("说明：这是预览，还没有写入配置列表。确认后会创建插件声音组和各角色分组。")
+    return sb.toString()
+}
+
+
+private fun buildAiPluginVoiceGroupPreviewText(
+    pluginName: String,
+    voices: List<AiPluginVoicePreview>,
+): String {
+    if (pluginName.isBlank()) {
+        return "未选择 TTS 插件。"
+    }
+
+    if (voices.isEmpty()) {
+        return "已选择插件：$pluginName\n未能从插件代码中预览到声音列表。动态插件后续会通过插件接口获取声音。"
+    }
+
+    val groupOrder = listOf(
+        "女童",
+        "男童",
+        "少女",
+        "少年",
+        "女青年",
+        "男青年",
+        "女中年",
+        "男中年",
+        "女老年",
+        "男老年"
+    )
+
+    val grouped = voices
+        .mapNotNull { voice ->
+            val group = classifyAiVoiceGroup("${voice.voiceName} ${voice.voiceId}") ?: return@mapNotNull null
+            group to voice
+        }
+        .groupBy({ it.first }, { it.second })
+
+    val unmatchedCount = voices.count { voice ->
+        classifyAiVoiceGroup("${voice.voiceName} ${voice.voiceId}") == null
+    }
+
+    val sb = StringBuilder()
+    sb.append("已选择插件：").append(pluginName).append("\n")
+    sb.append("声音总数：").append(voices.size).append(" 个\n")
+    sb.append("可识别角色候选：").append(grouped.values.sumOf { it.size }).append(" 个\n")
+    if (unmatchedCount > 0) {
+        sb.append("未归类声音：").append(unmatchedCount).append(" 个\n")
+    }
+    sb.append("\n")
+
+    groupOrder.forEach { group ->
+        val items = grouped[group].orEmpty()
+        if (items.isEmpty()) return@forEach
+
+        sb.append(group).append("：").append(items.size).append(" 个候选\n")
+        items.take(5).forEach { voice ->
+            sb.append("  ").append(voice.voiceName).append("\n")
+        }
+        if (items.size > 5) {
+            sb.append("  ... 还有 ").append(items.size - 5).append(" 个\n")
+        }
+        sb.append("\n")
+    }
+
+    if (grouped.isEmpty()) {
+        sb.append("没有识别到女童、男童、女青年等角色候选声音。")
+    }
+
+    return sb.toString()
+}
+
+
+private fun buildAiPluginVoicePreviewText(pluginName: String, voices: List<AiPluginVoicePreview>): String {
+    if (pluginName.isBlank()) {
+        return "未选择 TTS 插件。"
+    }
+
+    if (voices.isEmpty()) {
+        return "已选择插件：$pluginName\\n未能从插件代码中预览到声音列表。动态插件后续会通过插件接口获取声音。"
+    }
+
+    val sb = StringBuilder()
+    sb.append("已选择插件：").append(pluginName).append("\\n")
+    sb.append("预览声音数量：").append(voices.size).append(" 个").append("\\n")
+    sb.append("前 8 个声音：").append("\\n")
+
+    voices.take(8).forEach { voice ->
+        sb.append("  ").append(voice.voiceName).append("\\n")
+    }
+
+    if (voices.size > 8) {
+        sb.append("  ... 还有 ").append(voices.size - 8).append(" 个").append("\\n")
+    }
+
+    return sb.toString()
+}
+
+
+private fun buildAiRuleRolePreviewText(rule: SpeechRule?): String {
+    if (rule == null) {
+        return "未找到已启用的完整朗读规则。"
+    }
+
+    val tags = parseAiRuleRoleTags(rule)
+    if (tags.isEmpty()) {
+        return "当前朗读规则没有解析到可生成的角色标签。\n\n旁白、音效、括号标签会被跳过。"
+    }
+
+    val groupOrder = listOf(
+        "女童",
+        "男童",
+        "少女",
+        "少年",
+        "女青年",
+        "男青年",
+        "女中年",
+        "男中年",
+        "女老年",
+        "男老年"
+    )
+
+    val grouped = tags.groupBy { it.groupName }
+
+    val sb = StringBuilder()
+    sb.append("当前规则：").append(rule.name).append("\n")
+    sb.append("可生成角色配置：").append(tags.size).append(" 条").append("\n\n")
+    sb.append("预览只显示每组前 5 条。").append("\n\n")
+
+    groupOrder.forEach { group ->
+        val items = grouped[group].orEmpty()
+        if (items.isEmpty()) return@forEach
+
+        sb.append(group).append("：共 ").append(items.size).append(" 条").append("\n")
+
+        items.take(5).forEach { item ->
+            sb.append("  ").append(item.displayName).append("\n")
+        }
+
+        if (items.size > 5) {
+            sb.append("  ... 还有 ").append(items.size - 5).append(" 条").append("\n")
+        }
+
+        sb.append("\n")
+    }
+
+    sb.append("旁白、音效、括号标签不会生成。")
+    return sb.toString()
+}
+
+
+private fun restartApp(context: Context) {
+    val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+    if (intent != null) {
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        context.startActivity(intent)
+        exitProcess(0)
+    }
+}
+
+private fun searchDigitVariants(digits: String): Set<String> {
+    val result = mutableSetOf<String>()
+
+    if (digits.isNotBlank()) {
+        result.add(digits)
+
+        if (digits.length == 1) {
+            result.add(digits.padStart(2, '0'))
+        }
+    }
+
+    return result
+}
+
+private fun SearchTtsResult.matchesSearch(
+    context: Context,
+    keyword: String,
+): Boolean {
+    val query = keyword.trim().lowercase()
+    if (query.isEmpty()) return false
+
+    if (
+        group.name.lowercase().contains(query) ||
+        groupPath.lowercase().contains(query) ||
+        tts.displayName.lowercase().contains(query) ||
+        pluginName.lowercase().contains(query) ||
+        pluginId.lowercase().contains(query)
+    ) {
+        return true
+    }
+
+    val descriptor = ItemDescriptorFactory.from(context, tts)
+    val isPureNumber = query.all { it.isDigit() }
+
+    if (isPureNumber) {
+        val variants = searchDigitVariants(query)
+
+        val fields = listOf(
+            group.name,
+            groupPath,
+            tts.displayName,
+            pluginName,
+            pluginId,
+            descriptor.tagName,
+            descriptor.desc,
+            descriptor.bottom
+        )
+
+        return fields.any { field ->
+            val text = field.toString()
+            val lower = text.lowercase()
+            val digitsOnly = text.filter { it.isDigit() }
+
+            variants.any { v ->
+                lower.contains(v) || digitsOnly.contains(v)
+            }
+        }
+    }
+
+    return listOf(
+        pluginName,
+        pluginId,
+        descriptor.tagName,
+        descriptor.type,
+        descriptor.standby,
+        descriptor.desc,
+        descriptor.bottom
+    ).any {
+        it.toString().lowercase().contains(query)
+    }
+}
+
+@Composable
+private fun EditGroupMembersDialog(
+    groupName: String,
+    list: List<SystemTtsV2>,
+    targetGroups: List<GroupMoveOption>,
+    onDismissRequest: () -> Unit,
+    onConfirm: (selectedIds: Set<Long>, targetGroup: SystemTtsGroup) -> Unit,
+) {
+    var selectedIds by remember(groupName, list) {
+        mutableStateOf<Set<Long>>(emptySet())
+    }
+
+    var targetGroupId by remember(groupName, targetGroups) {
+        mutableStateOf<Long?>(targetGroups.firstOrNull()?.group?.id)
+    }
+
+    val targetGroup = targetGroups.firstOrNull { it.group.id == targetGroupId }?.group
+
+    AlertDialog(
+        onDismissRequest = onDismissRequest,
+        title = {
+            Text(text = "编辑分组 - $groupName")
+        },
+        text = {
+            Column {
+                if (list.isEmpty()) {
+                    Text(text = "这个分组里没有可移动的音色")
+                } else {
+                    Text(text = "选择要移动的音色")
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        TextButton(
+                            onClick = {
+                                selectedIds = list.map { it.id }.toSet()
+                            }
+                        ) {
+                            Text("全选")
+                        }
+
+                        TextButton(
+                            onClick = {
+                                selectedIds = emptySet()
+                            }
+                        ) {
+                            Text("清空")
+                        }
+                    }
+
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 260.dp)
+                    ) {
+                        itemsIndexed(
+                            list,
+                            key = { _, item -> item.id }
+                        ) { _, item ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Checkbox(
+                                    checked = selectedIds.contains(item.id),
+                                    onCheckedChange = { checked ->
+                                        selectedIds =
+                                            if (checked) {
+                                                selectedIds + item.id
+                                            } else {
+                                                selectedIds - item.id
+                                            }
+                                    }
+                                )
+
+                                Column(
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text(text = item.displayName)
+                                }
+                            }
+                        }
+                    }
+
+                    Text(
+                        text = "移动到目标分组",
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+
+                    if (targetGroups.isEmpty()) {
+                        Text(text = "没有可选择的目标分组")
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 220.dp)
+                        ) {
+                            itemsIndexed(
+                                targetGroups,
+                                key = { _, item -> item.group.id }
+                            ) { _, item ->
+                                val prefix = "　".repeat(item.level)
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Checkbox(
+                                        checked = targetGroupId == item.group.id,
+                                        onCheckedChange = { checked ->
+                                            if (checked) {
+                                                targetGroupId = item.group.id
+                                            }
+                                        }
+                                    )
+
+                                    Text(text = "$prefix📁 ${item.group.name}")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = selectedIds.isNotEmpty() && targetGroup != null,
+                onClick = {
+                    targetGroup?.let {
+                        onConfirm(selectedIds, it)
+                    }
+                }
+            ) {
+                Text("移动 ${selectedIds.size} 项")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismissRequest) {
+                Text("取消")
+            }
+        }
+    )
+}
+
+@Composable
+private fun BatchMoveDialog(
+    selectedGroupCount: Int,
+    selectedTtsCount: Int,
+    targetGroups: List<GroupMoveOption>,
+    onDismissRequest: () -> Unit,
+    onConfirm: (targetGroup: SystemTtsGroup) -> Unit,
+) {
+    var targetGroupId by remember(targetGroups) {
+        mutableStateOf<Long?>(targetGroups.firstOrNull()?.group?.id)
+    }
+
+    val targetGroup = targetGroups.firstOrNull {
+        it.group.id == targetGroupId
+    }?.group
+
+    AlertDialog(
+        onDismissRequest = onDismissRequest,
+        title = {
+            Text(text = "移动选中项")
+        },
+        text = {
+            Column {
+                Text(
+                    text = "将移动：${selectedGroupCount} 个分组，${selectedTtsCount} 个音色"
+                )
+
+                Text(
+                    text = "选择目标分组",
+                    modifier = Modifier.padding(top = 10.dp)
+                )
+
+                if (targetGroups.isEmpty()) {
+                    Text(
+                        text = "没有可选择的目标分组",
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 360.dp)
+                            .padding(top = 8.dp)
+                    ) {
+                        itemsIndexed(
+                            targetGroups,
+                            key = { _, item -> item.group.id }
+                        ) { _, item ->
+                            val prefix = "　".repeat(item.level)
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        targetGroupId = item.group.id
+                                    }
+                                    .padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Checkbox(
+                                    checked = targetGroupId == item.group.id,
+                                    onCheckedChange = { checked ->
+                                        if (checked) {
+                                            targetGroupId = item.group.id
+                                        }
+                                    }
+                                )
+
+                                Text(text = "$prefix📁 ${item.group.name}")
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = targetGroup != null,
+                onClick = {
+                    targetGroup?.let {
+                        onConfirm(it)
+                    }
+                }
+            ) {
+                Text("移动")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismissRequest) {
+                Text("取消")
+            }
+        }
+    )
+}
+
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@Composable
+internal fun ListManagerScreen(
+    sharedVM: SharedViewModel,
+    vm: ListManagerViewModel = viewModel(),
+) {
+    val navController = LocalNavController.current
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+
+    var inputSearchKeyword by rememberSaveable { mutableStateOf("") }
+    var searchKeyword by rememberSaveable { mutableStateOf("") }
+    var isSearchMode by rememberSaveable { mutableStateOf(false) }
+
+    var isRestarting by rememberSaveable { mutableStateOf(false) }
+
+    var isFabExpanded by rememberSaveable { mutableStateOf(false) }
+    var isFabTucked by rememberSaveable { mutableStateOf(true) }
+
+    var isBatchEditMode by rememberSaveable { mutableStateOf(false) }
+    var selectedGroupIds by rememberSaveable { mutableStateOf<Set<Long>>(emptySet()) }
+    var selectedTtsIds by rememberSaveable { mutableStateOf<Set<Long>>(emptySet()) }
+    var excludedTtsIds by rememberSaveable { mutableStateOf<Set<Long>>(emptySet()) }
+    var showBatchDeleteDialog by remember { mutableStateOf(false) }
+    var showSwitchPluginDialog by remember { mutableStateOf(false) }
+var showBatchMoveDialog by remember { mutableStateOf(false) }
+    val selectedCount = selectedGroupIds.size + selectedTtsIds.size
+
+    fun exitSearchMode() {
+        isSearchMode = false
+        inputSearchKeyword = ""
+        searchKeyword = ""
+        isFabExpanded = false
+        isFabTucked = true
+    }
+
+    fun exitBatchEditMode() {
+        isBatchEditMode = false
+        selectedGroupIds = emptySet()
+        selectedTtsIds = emptySet()
+        excludedTtsIds = emptySet()
+        isFabExpanded = false
+        isFabTucked = true
+    }
+
+    BackHandler(enabled = isSearchMode) {
+        exitSearchMode()
+    }
+
+    LaunchedEffect(inputSearchKeyword) {
+        delay(250)
+        searchKeyword = inputSearchKeyword.trim()
+    }
+
+    var showSortDialog by remember { mutableStateOf<List<SystemTtsV2>?>(null) }
+    if (showSortDialog != null) {
+        SortDialog(
+            onDismissRequest = { showSortDialog = null },
+            list = showSortDialog!!
+        )
+    }
+
+    var showQuickEdit by remember { mutableStateOf<SystemTtsV2?>(null) }
+    var showAiGenerateConfigDialog by remember { mutableStateOf(false) }
+    var aiGenerateSelectedPluginId by rememberSaveable { mutableStateOf("") }
+    var aiGenerateDynamicPluginId by rememberSaveable { mutableStateOf("") }
+    var aiGenerateDynamicVoices by remember { mutableStateOf<List<AiPluginVoicePreview>>(emptyList()) }
+    var aiGenerateVoiceLoading by remember { mutableStateOf(false) }
+    var aiGenerateVoiceError by remember { mutableStateOf("") }
+    var aiGenerateMatchPreviewText by remember { mutableStateOf("") }
+    var showAiGenerateModelDialog by remember { mutableStateOf(false) }
+    var aiGenerateModelText by remember { mutableStateOf("") }
+    var aiRulePreviewExpanded by rememberSaveable { mutableStateOf(false) }
+    if (showQuickEdit != null) {
+        QuickEditBottomSheet(
+            onDismissRequest = {
+                dbm.systemTtsV2.insert(showQuickEdit!!)
+                if (showQuickEdit?.isEnabled == true) {
+                    SystemTtsService.notifyUpdateConfig()
+                }
+                showQuickEdit = null
+            },
+            systts = showQuickEdit!!,
+            onSysttsChange = {
+                showQuickEdit = it
+            }
+        )
+    }
+
+    if (showAiGenerateModelDialog) {
+        TextFieldDialog(
+            title = "🤖 AI生成配置模型设置",
+            text = aiGenerateModelText,
+            onTextChange = { aiGenerateModelText = it },
+            onDismissRequest = {
+                showAiGenerateModelDialog = false
+            }
+        ) {
+            writeAiGenerateConfigApiText(context, aiGenerateModelText)
+            showAiGenerateModelDialog = false
+            context.toast("已保存 AI生成配置模型设置")
+        }
+    }
+
+    if (showAiGenerateConfigDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                showAiGenerateConfigDialog = false
+            },
+            title = {
+                Text("🤖 AI生成配置列表")
+            },
+            text = {
+                val activeRule = remember(showAiGenerateConfigDialog) {
+                    dbm.speechRuleDao.allEnabled.firstOrNull {
+                        !it.isModule && it.projectMode != "pipeline"
+                    } ?: dbm.speechRuleDao.all.firstOrNull {
+                        !it.isModule && it.isEnabled
+                    }
+                }
+
+                val aiPluginList = remember(showAiGenerateConfigDialog) {
+                    dbm.pluginDao.all.filter { it.isEnabled }
+                }
+
+                val selectedPlugin = remember(aiGenerateSelectedPluginId, aiPluginList) {
+                    aiPluginList.firstOrNull { it.pluginId == aiGenerateSelectedPluginId }
+                }
+
+                val staticVoicePreview = remember(selectedPlugin?.pluginId) {
+                    selectedPlugin?.let { extractAiPluginVoicePreview(it.code.toString()) }.orEmpty()
+                }
+
+                val voicePreview = remember(
+                    selectedPlugin?.pluginId,
+                    aiGenerateDynamicPluginId,
+                    aiGenerateDynamicVoices,
+                    staticVoicePreview
+                ) {
+                    if (
+                        selectedPlugin != null &&
+                        aiGenerateDynamicPluginId == selectedPlugin.pluginId &&
+                        aiGenerateDynamicVoices.isNotEmpty()
+                    ) {
+                        aiGenerateDynamicVoices
+                    } else {
+                        staticVoicePreview
+                    }
+                }
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    val rolePreviewText = buildAiRuleRolePreviewText(activeRule)
+                    val rolePreviewLines = rolePreviewText.lines()
+                    val rolePreviewCollapsedText = buildString {
+                        rolePreviewLines.take(8).forEachIndexed { index, line ->
+                            append(line)
+                            if (index != minOf(7, rolePreviewLines.size - 1)) {
+                                append("\n")
+                            }
+                        }
+
+                        if (rolePreviewLines.size > 8) {
+                            append("\n…（已折叠，点击展开查看全部）")
+                        }
+                    }
+
+                    Text(
+                        text = if (aiRulePreviewExpanded) rolePreviewText else rolePreviewCollapsedText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    TextButton(
+                        onClick = {
+                            aiRulePreviewExpanded = !aiRulePreviewExpanded
+                        }
+                    ) {
+                        Text(if (aiRulePreviewExpanded) "收起规则详情" else "展开规则详情")
+                    }
+
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "AI匹配模型",
+                            style = MaterialTheme.typography.titleSmall,
+                            modifier = Modifier.weight(1f)
+                        )
+
+                        TextButton(
+                            onClick = {
+                                aiGenerateModelText = readAiGenerateConfigApiText(context)
+                                showAiGenerateModelDialog = true
+                            }
+                        ) {
+                            Text("模型设置")
+                        }
+                    }
+
+                    Text(
+                        text = if (readAiGenerateConfigApiText(context).isBlank()) {
+                            "未单独设置模型，后续将回退使用主规则 miyue.txt。"
+                        } else {
+                            "已设置独立 AI 生成配置模型。"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+                    Text(
+                        text = "选择 TTS 插件",
+                        style = MaterialTheme.typography.titleSmall
+                    )
+
+                    if (aiPluginList.isEmpty()) {
+                        Text(
+                            text = "当前没有可用插件。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    } else {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 260.dp)
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            aiPluginList.forEach { plugin ->
+                                TextButton(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    onClick = {
+                                        aiGenerateSelectedPluginId = plugin.pluginId
+                                        aiGenerateDynamicPluginId = ""
+                                        aiGenerateDynamicVoices = emptyList()
+                                        aiGenerateVoiceError = ""
+                                        aiGenerateMatchPreviewText = ""
+                                    }
+                                ) {
+                                    Text(
+                                        text = if (plugin.pluginId == aiGenerateSelectedPluginId) {
+                                            "✅ ${plugin.name.ifBlank { plugin.pluginId }}"
+                                        } else {
+                                            plugin.name.ifBlank { plugin.pluginId }
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    if (selectedPlugin != null) {
+                        TextButton(
+                            enabled = !aiGenerateVoiceLoading,
+                            onClick = {
+                                val plugin = selectedPlugin
+                                if (plugin != null) {
+                                    aiGenerateVoiceLoading = true
+                                    aiGenerateVoiceError = ""
+
+                                    scope.launch {
+                                        val result = withIO {
+                                            runCatching {
+                                                fetchAiPluginVoicesDynamic(context, plugin)
+                                            }
+                                        }
+
+                                        result.onSuccess { voices ->
+                                            aiGenerateDynamicPluginId = plugin.pluginId
+                                            aiGenerateDynamicVoices = voices
+                                            aiGenerateMatchPreviewText = ""
+                                            aiGenerateVoiceError = if (voices.isEmpty()) {
+                                                "动态获取成功，但声音列表为空"
+                                            } else {
+                                                ""
+                                            }
+                                        }.onFailure { e ->
+                                            aiGenerateVoiceError = e.message ?: "动态获取声音列表失败"
+                                        }
+
+                                        aiGenerateVoiceLoading = false
+                                    }
+                                }
+                            }
+                        ) {
+                            Text(if (aiGenerateVoiceLoading) "📡 正在获取声音列表..." else "📡 动态获取声音列表")
+                        }
+
+                        if (aiGenerateVoiceError.isNotBlank()) {
+                            Text(
+                                text = aiGenerateVoiceError,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+                    Text(
+                        text = buildAiPluginVoiceGroupPreviewText(
+                            pluginName = selectedPlugin?.name.orEmpty(),
+                            voices = voicePreview
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Button(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            aiGenerateMatchPreviewText = "🤖 AI正在匹配，请稍候..."
+
+                            scope.launch {
+                                aiGenerateMatchPreviewText = withIO {
+                                    buildAiGenerateConfigMatchPreviewTextWithAi(
+                                        context = context,
+                                        rule = activeRule,
+                                        pluginName = selectedPlugin?.name.orEmpty(),
+                                        voices = voicePreview
+                                    )
+                                }
+                            }
+                        }
+                    ) {
+                        Text("🎯 生成匹配预览")
+                    }
+
+                    if (aiGenerateMatchPreviewText.isNotBlank()) {
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+                        Text(
+                            text = aiGenerateMatchPreviewText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        Button(
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = {
+                                val count = generateAiConfigListFromPreview(
+                                    context = context,
+                                    rule = activeRule,
+                                    plugin = selectedPlugin,
+                                    voices = voicePreview
+                                )
+
+                                if (count > 0) {
+                                    context.longToast("已生成 $count 条 TTS 配置")
+                                    SystemTtsService.notifyUpdateConfig()
+                                    showAiGenerateConfigDialog = false
+                                } else {
+                                    aiGenerateMatchPreviewText = "没有生成新配置。可能是已存在相同朗读规则 tag，或当前插件没有可匹配声音。"
+                                }
+                            }
+                        ) {
+                            Text("✅ 确认生成配置列表")
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showAiGenerateConfigDialog = false
+                    }
+                ) {
+                    Text("关闭")
+                }
+            }
+        )
+    }
+
+    fun navigateToEdit(systts: SystemTtsV2) {
+        sharedVM.put(NavRoutes.TtsEdit.DATA, systts)
+        navController.navigate(NavRoutes.TtsEdit.id)
+    }
+
+    var hasShownTip by rememberSaveable { mutableStateOf(false) }
+
+    var showTagClearDialog by remember { mutableStateOf<SystemTtsV2?>(null) }
+    if (showTagClearDialog != null) {
+        val systts = showTagClearDialog!!
+        val config = systts.config as TtsConfigurationDTO
+        TagDataClearConfirmDialog(
+            tagData = config.speechRule.tagData.toString(),
+            onDismissRequest = { showTagClearDialog = null },
+            onConfirm = {
+                dbm.systemTtsV2.update(
+                    systts.copy(
+                        config = config.copy(
+                            speechRule = config.speechRule.copy(
+                                target = SpeechTarget.ALL,
+                            ).apply { resetTag() },
+                        )
+                    )
+                )
+                if (systts.isEnabled) {
+                    SystemTtsService.notifyUpdateConfig()
+                }
+                showTagClearDialog = null
+            }
+        )
+    }
+
+    fun switchSpeechTarget(systts: SystemTtsV2) {
+        if (!hasShownTip) {
+            hasShownTip = true
+            context.longToast(R.string.systts_drag_tip_msg)
+        }
+
+        val config = systts.config as TtsConfigurationDTO
+        if (config.speechRule.target == SpeechTarget.BGM) return
+        val ruleData = config.speechRule.copy()
+
+        if (config.speechRule.target == SpeechTarget.TAG) {
+            dbm.speechRuleDao.getByRuleId(
+                config.speechRule.tagRuleId
+            )?.let { speechRule ->
+                val keys = speechRule.tags.keys.toList()
+                val idx = keys.indexOf(config.speechRule.tag)
+
+                val nextIndex = idx + 1
+                val newTag = keys.getOrNull(nextIndex)
+                if (newTag == null) {
+                    if (ruleData.isTagDataEmpty()) {
+                        ruleData.target = SpeechTarget.ALL
+                        ruleData.resetTag()
+                    } else {
+                        showTagClearDialog = systts
+                        return
+                    }
+                } else {
+                    ruleData.tag = newTag
+                    runCatching {
+                        ruleData.tagName =
+                            SpeechRuleEngine.getTagName(context, speechRule, info = ruleData)
+                    }.onFailure {
+                        ruleData.tagName = ""
+                        context.displayErrorDialog(it)
+                    }
+                }
+            }
+        } else {
+            dbm.speechRuleDao.getByRuleId(ruleData.tagRuleId)?.let {
+                ruleData.target = SpeechTarget.TAG
+                ruleData.tag = it.tags.keys.first()
+            }
+        }
+
+        dbm.systemTtsV2.update(systts.copy(config = systts.ttsConfig.copy(speechRule = ruleData)))
+        if (systts.isEnabled) {
+            SystemTtsService.notifyUpdateConfig()
+        }
+    }
+
+  fun autoTagAndSortGroup(node: GroupTreeNode) {
+    val groupRule = autoTagRuleByGroupName(node.group.name)
+
+    if (groupRule == null) {
+        context.toast("分组名未匹配到自动标签规则")
+        return
+    }
+
+    val targetList = node.list
+        .sortedBy { it.order }
+        .filter { it.config is TtsConfigurationDTO }
+
+    if (targetList.isEmpty()) {
+        context.toast("这个分组没有可处理的插件音色")
+        return
+    }
+
+    scope.launch {
+        var successCount = 0
+        var skipCount = 0
+
+        val workList = targetList.mapIndexed { originalIndex, item ->
+            AutoTagWorkItem(
+                originalIndex = originalIndex,
+                item = item,
+                rule = groupRule
+            )
+        }
+
+        withIO {
+            var newOrder = 0
+
+            workList.forEachIndexed { indexInGroup, work ->
+                val item = work.item
+                val config = item.config as TtsConfigurationDTO
+                val oldSpeechRule = config.speechRule
+
+                val speechRule = findSpeechRuleForAutoTag(
+                    oldRuleId = oldSpeechRule.tagRuleId,
+                    autoRule = groupRule,
+                    index = indexInGroup
+                )
+
+                if (speechRule == null) {
+                    skipCount++
+                    return@forEachIndexed
+                }
+
+                val targetTag = findAutoTagKey(
+                    speechRule = speechRule,
+                    rule = groupRule,
+                    index = indexInGroup
+                )
+
+                if (targetTag == null) {
+                    skipCount++
+                    return@forEachIndexed
+                }
+
+                val personality = getAutoTagPersonality(item)
+
+                val newTagData = buildAutoTagData(
+                    speechRule = speechRule,
+                    tag = targetTag,
+                    oldTagData = oldSpeechRule.tagData,
+                    personality = personality
+                )
+
+                var newSpeechRule = oldSpeechRule.copy(
+                    target = SpeechTarget.TAG,
+                    tagRuleId = speechRule.ruleId,
+                    tag = targetTag,
+                    tagData = newTagData,
+                    tagName = ""
+                )
+
+                val generatedTagName = runCatching {
+                    SpeechRuleEngine.getTagName(
+                        context,
+                        speechRule,
+                        info = newSpeechRule
+                    )
+                }.getOrElse {
+                    ""
+                }
+
+                val finalTagName = generatedTagName.ifBlank {
+                    speechRule.tags[targetTag].orEmpty()
+                }
+
+                if (finalTagName.isBlank()) {
+                    skipCount++
+                    return@forEachIndexed
+                }
+
+                newSpeechRule = newSpeechRule.copy(
+                    tagName = finalTagName
+                )
+
+                dbm.systemTtsV2.update(
+                    item.copy(
+                        order = newOrder,
+                        config = config.copy(
+                            speechRule = newSpeechRule
+                        )
+                    )
+                )
+
+                newOrder++
+                successCount++
+            }
+        }
+
+        if (targetList.any { it.isEnabled }) {
+            SystemTtsService.notifyUpdateConfig()
+        }
+
+        if (skipCount > 0) {
+            context.longToast("已整理 $successCount 个，跳过 $skipCount 个：朗读规则里没有对应标签")
+        } else {
+            context.longToast("已按分组「${node.group.name}」整理：$successCount 个音色")
+        }
+    }
+}
+    var deleteTts by remember { mutableStateOf<SystemTtsV2?>(null) }
+    if (deleteTts != null) {
+        ConfigDeleteDialog(
+            onDismissRequest = { deleteTts = null },
+            content = deleteTts?.displayName ?: ""
+        ) {
+            dbm.systemTtsV2.delete(deleteTts!!)
+            deleteTts = null
+        }
+    }
+
+    var groupAudioParamsDialog by remember { mutableStateOf<SystemTtsGroup?>(null) }
+    if (groupAudioParamsDialog != null) {
+        GroupAudioParamsDialog(
+            onDismissRequest = { groupAudioParamsDialog = null },
+            params = groupAudioParamsDialog!!.audioParams,
+            onConfirm = {
+                dbm.systemTtsV2.updateGroup(
+                    groupAudioParamsDialog!!.copy(audioParams = it)
+                )
+                groupAudioParamsDialog = null
+            }
+        )
+    }
+
+    val models by vm.list.collectAsStateWithLifecycle()
+
+    fun GroupTreeNode.flattenNodes(): List<GroupTreeNode> {
+        return listOf(this) + children.flatMap { it.flattenNodes() }
+    }
+
+    fun GroupTreeNode.collectAllTts(): List<SystemTtsV2> {
+        return list + children.flatMap { it.collectAllTts() }
+    }
+
+    fun List<GroupTreeNode>.flattenNodes(): List<GroupTreeNode> {
+        return flatMap { it.flattenNodes() }
+    }
+
+    fun List<GroupTreeNode>.collectAllTts(): List<SystemTtsV2> {
+        return flatMap { it.collectAllTts() }
+    }
+
+    fun List<GroupTreeNode>.selectedRootNodes(): List<GroupTreeNode> {
+        fun collect(node: GroupTreeNode): List<GroupTreeNode> {
+            if (selectedGroupIds.contains(node.group.id)) {
+                return listOf(node)
+            }
+            return node.children.flatMap { collect(it) }
+        }
+
+        return flatMap { collect(it) }
+    }
+
+    fun getBatchSelectedTtsList(): List<SystemTtsV2> {
+        val rootNodesToHandle = models.selectedRootNodes()
+        val ttsFromGroups = rootNodesToHandle.flatMap { it.collectAllTts() }
+
+        val ttsIdsFromGroups = ttsFromGroups.map { it.id }.toSet()
+
+        val directlySelectedTts = models.collectAllTts()
+            .filter { selectedTtsIds.contains(it.id) && !ttsIdsFromGroups.contains(it.id) }
+
+        return (ttsFromGroups + directlySelectedTts)
+            .distinctBy { it.id }
+            .filter { it.id !in excludedTtsIds }
+    }
+    
+    fun List<GroupTreeNode>.batchMoveTargetOptions(): List<GroupMoveOption> {
+    val blockedGroupIds = selectedRootNodes()
+        .flatMap { it.flattenNodes() }
+        .map { it.group.id }
+        .toSet()
+
+    return flattenGroupOptions(this)
+        .filter { it.group.id !in blockedGroupIds }
+}
+
+fun getDirectSelectedTtsForBatchMove(): List<SystemTtsV2> {
+    val selectedGroupTtsIds = models.selectedRootNodes()
+        .flatMap { it.collectAllTts() }
+        .map { it.id }
+        .toSet()
+
+    return models.collectAllTts()
+        .filter {
+            selectedTtsIds.contains(it.id) &&
+                    it.id !in selectedGroupTtsIds
+        }
+}
+
+    fun switchSelectedTtsPluginId(
+        newPluginId: String,
+        resetVoice: Boolean,
+    ) {
+        if (newPluginId.isBlank()) {
+            context.toast("插件ID为空")
+            return
+        }
+
+        val selectedTtsList = getBatchSelectedTtsList()
+
+        if (selectedTtsList.isEmpty()) {
+            context.toast("请先选择要切换的音色")
+            return
+        }
+
+        val targetPlugin = dbm.pluginDao.getEnabled(newPluginId)
+            ?: dbm.pluginDao.getByPluginId(newPluginId)
+
+        if (targetPlugin == null) {
+            context.toast("目标插件不存在：$newPluginId")
+            return
+        }
+
+        val targetSampleRate = resolvePluginSampleRate(targetPlugin)
+        val targetNeedDecode = resolvePluginNeedDecode(targetPlugin)
+
+        val updatedList = selectedTtsList.mapNotNull { tts ->
+            val config = tts.config as? TtsConfigurationDTO ?: return@mapNotNull null
+            val source = config.source as? PluginTtsSource ?: return@mapNotNull null
+
+            val migratedVoice = if (resetVoice) {
+                ""
+            } else {
+                resolveVoiceIdForCurrentPlugin(
+                    displayName = tts.displayName,
+                    oldVoiceId = source.voice,
+                    targetPlugin = targetPlugin
+                )
+            }
+
+            val newSource = if (resetVoice) {
+                source.copy(
+                    pluginId = newPluginId,
+                    locale = "",
+                    voice = ""
+                )
+            } else {
+                source.copy(
+                    pluginId = newPluginId,
+                    voice = migratedVoice
+                )
+            }
+
+            if (source.pluginId == newSource.pluginId &&
+                source.locale == newSource.locale &&
+                source.voice == newSource.voice &&
+                config.audioFormat.sampleRate == targetSampleRate &&
+                config.audioFormat.isNeedDecode == targetNeedDecode
+            ) {
+                return@mapNotNull null
+            }
+
+            tts.copy(
+                config = config.copy(
+                    source = newSource,
+                    audioFormat = config.audioFormat.copy(
+                        sampleRate = targetSampleRate,
+                        isNeedDecode = targetNeedDecode
+                    )
+                )
+            )
+        }
+
+        if (updatedList.isEmpty()) {
+            context.toast("没有需要重新适配的插件TTS")
+            return
+        }
+
+        scope.launch {
+            withIO {
+                dbm.systemTtsV2.update(*updatedList.toTypedArray())
+            }
+
+            if (updatedList.any { it.isEnabled }) {
+                SystemTtsService.notifyUpdateConfig()
+            }
+
+            context.longToast("已切换 ${updatedList.size} 个音色到插件：$newPluginId")
+            exitBatchEditMode()
+        }
+    }
+
+if (showBatchMoveDialog) {
+    val selectedGroupNodes = models.selectedRootNodes()
+    val selectedDirectTtsList = getDirectSelectedTtsForBatchMove()
+    val targetGroups = models.batchMoveTargetOptions()
+
+    BatchMoveDialog(
+        selectedGroupCount = selectedGroupNodes.size,
+        selectedTtsCount = selectedDirectTtsList.size,
+        targetGroups = targetGroups,
+        onDismissRequest = {
+            showBatchMoveDialog = false
+        },
+        onConfirm = { targetGroup ->
+            showBatchMoveDialog = false
+
+            if (selectedGroupNodes.isEmpty() && selectedDirectTtsList.isEmpty()) {
+                context.toast("没有可移动的选中项")
+                return@BatchMoveDialog
+            }
+
+            scope.launch {
+                withIO {
+                    selectedGroupNodes.forEach { node ->
+                        vm.moveGroupToParent(
+                            group = node.group,
+                            parentGroupId = targetGroup.id
+                        )
+                    }
+
+                    val targetNode = models.flattenNodes()
+                        .firstOrNull { it.group.id == targetGroup.id }
+
+                    val startOrder = (
+                            targetNode
+                                ?.list
+                                ?.maxOfOrNull { it.order }
+                                ?: -1
+                            ) + 1
+
+                    selectedDirectTtsList.forEachIndexed { index, tts ->
+                        dbm.systemTtsV2.update(
+                            tts.copy(
+                                groupId = targetGroup.id,
+                                order = startOrder + index
+                            )
+                        )
+                    }
+                }
+
+                val hasEnabledTts = selectedDirectTtsList.any { it.isEnabled } ||
+                        selectedGroupNodes.any { node ->
+                            node.collectAllTts().any { tts -> tts.isEnabled }
+                        }
+
+                if (hasEnabledTts) {
+                    SystemTtsService.notifyUpdateConfig()
+                }
+
+                context.longToast(
+                    "已移动 ${selectedGroupNodes.size} 个分组，${selectedDirectTtsList.size} 个音色到 ${targetGroup.name}"
+                )
+
+                exitBatchEditMode()
+            }
+        }
+    )
+}
+
+    if (showBatchDeleteDialog) {
+        AlertDialog(
+            onDismissRequest = { showBatchDeleteDialog = false },
+            title = {
+                Text(text = "确认删除")
+            },
+            text = {
+                Text(
+                    text = "确定删除选中的 $selectedCount 项吗？\n\n删除分组会同时删除该分组下的所有子分组和音色。"
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showBatchDeleteDialog = false
+
+                        val rootNodesToDelete = models.selectedRootNodes()
+                        val groupNodesToDelete = rootNodesToDelete.flatMap { it.flattenNodes() }
+                        val ttsFromGroups = rootNodesToDelete.flatMap { it.collectAllTts() }
+
+                        val ttsIdsFromGroups = ttsFromGroups.map { it.id }.toSet()
+                        val directlySelectedTts = models.collectAllTts()
+                            .filter { selectedTtsIds.contains(it.id) && !ttsIdsFromGroups.contains(it.id) }
+
+                        val ttsToDelete = (ttsFromGroups + directlySelectedTts)
+                            .distinctBy { it.id }
+                            .filter { it.id !in excludedTtsIds }
+
+                        val groupNodesDeleteOrder = groupNodesToDelete.asReversed()
+
+                        scope.launch {
+                            withIO {
+                                if (ttsToDelete.isNotEmpty()) {
+                                    dbm.systemTtsV2.delete(*ttsToDelete.toTypedArray())
+                                }
+
+                                groupNodesDeleteOrder.forEach { node ->
+                                    dbm.systemTtsV2.deleteGroup(node.group)
+                                }
+                            }
+
+                            if (ttsToDelete.any { it.isEnabled }) {
+                                SystemTtsService.notifyUpdateConfig()
+                            }
+
+                            context.longToast("已删除 ${ttsToDelete.size} 个音色，${groupNodesToDelete.size} 个分组")
+                            exitBatchEditMode()
+                        }
+                    }
+                ) {
+                    Text("确定删除")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showBatchDeleteDialog = false
+                    }
+                ) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
+    val pluginFlow = remember { dbm.pluginDao.flowAll().conflate() }
+    val pluginList by pluginFlow.collectAsStateWithLifecycle(emptyList())
+    val pluginNameMap = remember(pluginList) {
+        pluginList.associate { it.pluginId to it.name }
+    }
+    if (showSwitchPluginDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                showSwitchPluginDialog = false
+            },
+            title = {
+                Text("批量切换插件")
+            },
+            text = {
+                Column {
+                    Text(
+                        text = "选择目标插件。保留声音适合同源插件；重选声音会清空语言和声音。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    if (pluginList.isEmpty()) {
+                        Text(
+                            text = "当前没有可用插件",
+                            modifier = Modifier.padding(top = 12.dp)
+                        )
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 420.dp)
+                                .padding(top = 8.dp)
+                        ) {
+                            itemsIndexed(
+                                pluginList,
+                                key = { _, plugin -> plugin.id }
+                            ) { _, plugin ->
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 6.dp)
+                                ) {
+                                    Text(
+                                        text = plugin.name.ifBlank { "未命名插件" },
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+
+                                    Text(
+                                        text = "pluginId: ${plugin.pluginId}  |  v${plugin.version}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        TextButton(
+                                            onClick = {
+                                                showSwitchPluginDialog = false
+                                                switchSelectedTtsPluginId(
+                                                    newPluginId = plugin.pluginId,
+                                                    resetVoice = false
+                                                )
+                                            }
+                                        ) {
+                                            Text("适配声音")
+                                        }
+
+                                        TextButton(
+                                            onClick = {
+                                                showSwitchPluginDialog = false
+                                                switchSelectedTtsPluginId(
+                                                    newPluginId = plugin.pluginId,
+                                                    resetVoice = true
+                                                )
+                                            }
+                                        ) {
+                                            Text("重选声音")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showSwitchPluginDialog = false
+                    }
+                ) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+    val flattenedSearchList = remember(models, pluginNameMap) {
+        flattenSearchTtsResults(
+            nodes = models,
+            pluginNameMap = pluginNameMap
+        )
+    }
+
+    val canSearchInput = remember(inputSearchKeyword) {
+        val q = inputSearchKeyword.trim()
+        q.isNotBlank() && (q.all { it.isDigit() } || q.length >= 2)
+    }
+
+    val shouldSearch = remember(searchKeyword) {
+        searchKeyword.isNotBlank() &&
+                (searchKeyword.all { it.isDigit() } || searchKeyword.length >= 2)
+    }
+
+    val searchResults = remember(flattenedSearchList, searchKeyword, context, shouldSearch) {
+        if (!shouldSearch) {
+            emptyList()
+        } else {
+            flattenedSearchList
+                .asSequence()
+                .filter { it.matchesSearch(context, searchKeyword) }
+                .sortedBy { it.tts.displayName }
+                .take(50)
+                .toList()
+        }
+    }
+
+    var editGroupMembersDialog by remember { mutableStateOf<GroupTreeNode?>(null) }
+    if (editGroupMembersDialog != null) {
+        val node = editGroupMembersDialog!!
+        val targetGroups = flattenGroupOptions(models)
+            .filter { it.group.id != node.group.id }
+
+        EditGroupMembersDialog(
+            groupName = node.group.name,
+            list = node.list.sortedBy { it.order },
+            targetGroups = targetGroups,
+            onDismissRequest = {
+                editGroupMembersDialog = null
+            },
+            onConfirm = { selectedIds, targetGroup ->
+                val movingList = node.list.filter { selectedIds.contains(it.id) }
+
+                editGroupMembersDialog = null
+
+                scope.launch {
+                    withIO {
+                        movingList.forEachIndexed { index, tts ->
+                            dbm.systemTtsV2.update(
+                                tts.copy(
+                                    groupId = targetGroup.id,
+                                    order = index
+                                )
+                            )
+                        }
+                    }
+
+                    if (movingList.any { it.isEnabled }) {
+                        SystemTtsService.notifyUpdateConfig()
+                    }
+
+                    context.longToast("已移动 ${movingList.size} 个音色到 ${targetGroup.name}")
+                }
+            }
+        )
+    }
+
+    fun GroupTreeNode.toExportList(): List<GroupWithSystemTts> {
+        val self = GroupWithSystemTts(
+            group = group,
+            list = this.list
+        )
+
+        return listOf(self) + children.flatMap { it.toExportList() }
+    }
+
+    val listState = rememberLazyListState()
+    LazyListIndexStateSaver(models = models, listState = listState)
+
+    val reorderState = rememberReorderableLazyListState(
+        listState = listState,
+        onMove = vm::reorder
+    )
+
+    var addGroupDialog by remember { mutableStateOf(false) }
+    var addGroupParentId by remember { mutableStateOf(0L) }
+    var wrapGroupsDialog by remember { mutableStateOf(false) }
+
+    if (wrapGroupsDialog) {
+        var name by remember { mutableStateOf("总目录") }
+
+        TextFieldDialog(
+            title = "一键归入一级目录",
+            text = name,
+            onTextChange = { name = it },
+            onDismissRequest = { wrapGroupsDialog = false }
+        ) {
+            val targetName = name.ifBlank { "总目录" }
+
+            wrapGroupsDialog = false
+
+            scope.launch {
+                withIO {
+                    vm.wrapRootGroupsIntoParent(targetName)
+                }
+            }
+        }
+    }
+
+    if (addGroupDialog) {
+        var name by remember { mutableStateOf("") }
+
+        TextFieldDialog(
+            title = stringResource(id = R.string.add_group),
+            text = name,
+            onTextChange = { name = it },
+            onDismissRequest = { addGroupDialog = false }
+        ) {
+            val targetParentId = addGroupParentId
+            val targetName = name.ifBlank { context.getString(R.string.unnamed) }
+
+            addGroupDialog = false
+            addGroupParentId = 0L
+
+            scope.launch {
+                withIO {
+                    vm.addGroup(
+                        name = targetName,
+                        parentGroupId = targetParentId
+                    )
+                }
+            }
+        }
+    }
+
+    var showGroupExportSheet by remember { mutableStateOf<List<GroupWithSystemTts>?>(null) }
+    if (showGroupExportSheet != null) {
+        val list = showGroupExportSheet!!
+        ListExportBottomSheet(
+            onDismissRequest = { showGroupExportSheet = null },
+            list = list
+        )
+    }
+
+    var showExportSheet by remember { mutableStateOf<List<SystemTtsV2>?>(null) }
+    if (showExportSheet != null) {
+        val jStr = remember { AppConst.jsonBuilder.encodeToString(showExportSheet!!) }
+        ConfigExportBottomSheet(json = jStr) { showExportSheet = null }
+    }
+
+    var addPluginDialog by remember { mutableStateOf(false) }
+    if (addPluginDialog) {
+        PluginSelectionDialog(onDismissRequest = { addPluginDialog = false }) {
+            navigateToEdit(
+                SystemTtsV2(
+                    config = TtsConfigurationDTO(
+                        source = PluginTtsSource(
+                            pluginId = it.pluginId,
+                            locale = AppLocale.current(context).toCode()
+                        )
+                    )
+                )
+            )
+        }
+    }
+
+    var showAuditionDialog by remember { mutableStateOf<SystemTtsV2?>(null) }
+    if (showAuditionDialog != null) {
+        AuditionDialog(systts = showAuditionDialog!!) {
+            showAuditionDialog = null
+        }
+    }
+
+    var showOptions by rememberSaveable { mutableStateOf(false) }
+    val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
+    var moveGroupDialog by remember { mutableStateOf<SystemTtsGroup?>(null) }
+
+    if (moveGroupDialog != null) {
+        val movingGroup = moveGroupDialog!!
+
+        val rootGroups = models
+            .map { it.group }
+            .filter { it.id != movingGroup.id }
+
+        AlertDialog(
+            onDismissRequest = {
+                moveGroupDialog = null
+            },
+            title = {
+                Text(text = "🗂️ 选择要归入的一级目录")
+            },
+            text = {
+                if (rootGroups.isEmpty()) {
+                    Text(text = "没有可选择的一级目录")
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 420.dp)
+                    ) {
+                        itemsIndexed(
+                            rootGroups,
+                            key = { _, item -> item.id }
+                        ) { _, parent ->
+                            TextButton(
+                                modifier = Modifier.fillMaxWidth(),
+                                onClick = {
+                                    val targetParentId = parent.id
+                                    moveGroupDialog = null
+
+                                    scope.launch {
+                                        withIO {
+                                            vm.moveGroupToParent(
+                                                group = movingGroup,
+                                                parentGroupId = targetParentId
+                                            )
+                                        }
+                                    }
+                                }
+                            ) {
+                                Text(text = "📁 ${parent.name}")
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        moveGroupDialog = null
+                    }
+                ) {
+                    Text(text = "取消")
+                }
+            }
+        )
+    }
+    @Composable
+    fun SideMenuButton(
+        text: String,
+        widthDp: Int = 118,
+        heightDp: Int = 42,
+        onClick: () -> Unit,
+    ) {
+        Surface(
+            modifier = Modifier
+                .width(widthDp.dp)
+                .height(heightDp.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .clickable(onClick = onClick),
+            color = MaterialTheme.colorScheme.primaryContainer,
+            shape = RoundedCornerShape(14.dp),
+            tonalElevation = 4.dp,
+            shadowElevation = 4.dp
+        ) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = text,
+                    fontSize = 15.sp,
+                    maxLines = 1
+                )
+            }
+        }
+    }
+
+
+
+    @Composable
+    fun TopSearchField(
+        value: String,
+        onValueChange: (String) -> Unit,
+    ) {
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            singleLine = true,
+            textStyle = MaterialTheme.typography.bodyMedium.copy(
+                fontSize = 15.sp,
+                color = MaterialTheme.colorScheme.onSurface
+            ),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 8.dp),
+            decorationBox = { innerTextField ->
+                Row(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = "搜索",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(start = 8.dp),
+                        contentAlignment = Alignment.CenterStart
+                    ) {
+                        if (value.isEmpty()) {
+                            Text(
+                                text = "搜索音色 / 分组 / 插件 / 标签 / 数字编号",
+                                fontSize = 14.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        innerTextField()
+                    }
+                }
+            }
+        )
+    }
+
+    fun LazyListScope.searchBarItem() {
+        item(key = "search_bar") {
+            BasicTextField(
+                value = inputSearchKeyword,
+                onValueChange = {
+                    inputSearchKeyword = it
+                },
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyMedium.copy(
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurface
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                    .height(40.dp)
+                    .border(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.outline,
+                        shape = RoundedCornerShape(6.dp)
+                    )
+                    .padding(horizontal = 10.dp),
+                decorationBox = { innerTextField ->
+                    Row(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("🔍")
+
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(start = 6.dp),
+                            contentAlignment = Alignment.CenterStart
+                        ) {
+                            if (inputSearchKeyword.isEmpty()) {
+                                Text(
+                                    text = "搜索音色名 / 分组名 / 插件名 / 标签 / 数字编号",
+                                    fontSize = 14.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+
+                            innerTextField()
+                        }
+
+                        if (inputSearchKeyword.isNotEmpty()) {
+                            Text(
+                                text = "×",
+                                fontSize = 18.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier
+                                    .padding(horizontal = 6.dp)
+                                    .clickable {
+                                        inputSearchKeyword = ""
+                                        searchKeyword = ""
+                                    }
+                            )
+                        }
+                    }
+                }
+            )
+        }
+    }
+
+    fun LazyListScope.searchTtsItem(
+        item: SystemTtsV2,
+        groupLevel: Int,
+        keyPrefix: String,
+    ) {
+        item(key = "${keyPrefix}_${item.groupId}_${item.id}") {
+            val descriptor = remember(item) {
+                ItemDescriptorFactory.from(context, item)
+            }
+
+            Item(
+                reorderState = reorderState,
+                modifier = Modifier.padding(
+                    start = 8.dp,
+                    end = 8.dp,
+                    top = 4.dp,
+                    bottom = 4.dp
+                ),
+                name = item.displayName,
+                tagName = descriptor.tagName,
+                type = descriptor.type,
+                standby = descriptor.standby,
+                enabled = item.isEnabled,
+                onEnabledChange = {
+                    vm.updateTtsEnabled(item, it)
+                    if (it) SystemTtsService.notifyUpdateConfig()
+                },
+                desc = descriptor.desc,
+                params = descriptor.bottom,
+                onClick = {
+                    if (!isBatchEditMode) showQuickEdit = item
+                },
+                onLongClick = {
+                    if (!isBatchEditMode) switchSpeechTarget(item)
+                },
+                onCopy = {
+                    if (!isBatchEditMode) navigateToEdit(item.copy(id = System.currentTimeMillis()))
+                },
+                onDelete = {
+                    if (!isBatchEditMode) deleteTts = item
+                },
+                onEdit = {
+                    if (!isBatchEditMode) navigateToEdit(item)
+                },
+                onAudition = {
+                    if (!isBatchEditMode) {
+                        if (item.config is TtsConfigurationDTO) {
+                            showAuditionDialog = item
+                        } else {
+                            context.toast(R.string.not_support_audition)
+                        }
+                    }
+                },
+                onExport = {
+                    if (!isBatchEditMode) {
+                        showExportSheet = listOf(
+                            item.copy(groupId = AbstractListGroup.DEFAULT_GROUP_ID)
+                        )
+                    }
+                }
+            )
+        }
+    }
+
+    fun LazyListScope.batchGroupTreeNode(
+        node: GroupTreeNode,
+        level: Int = 0,
+        parentSelected: Boolean = false,
+    ) {
+        val g = node.group
+        val key = "batch_g_${g.id}"
+        val selfSelected = selectedGroupIds.contains(g.id)
+        val branchSelected = parentSelected || selfSelected
+
+        stickyHeader(key = key) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        vm.updateGroupExpanded(g, !g.isExpanded)
+                    }
+                    .padding(
+                        start = (level * 20).dp,
+                        end = 8.dp,
+                        top = 6.dp,
+                        bottom = 6.dp
+                    ),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(
+                    checked = branchSelected,
+                    onCheckedChange = { checked ->
+                        val idsInThisGroup = node.collectAllTts().map { it.id }.toSet()
+
+                        selectedGroupIds =
+                            if (checked) {
+                                selectedGroupIds + g.id
+                            } else {
+                                selectedGroupIds - g.id
+                            }
+
+                        // 重新勾选文件夹时，之前单独取消的音色应恢复选中；
+                        // 取消文件夹时，也清理这个分组下的排除状态。
+                        excludedTtsIds = excludedTtsIds - idsInThisGroup
+                    }
+                )
+
+                Text(
+                    text = if (g.isExpanded) {
+                        "📂 ${g.name}"
+                    } else {
+                        "📁 ${g.name}"
+                    },
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.titleMedium
+                )
+
+                Text(
+                    text = if (g.isExpanded) "收起" else "展开",
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(horizontal = 8.dp)
+                )
+            }
+        }
+
+        if (g.isExpanded) {
+            itemsIndexed(
+                node.list.sortedBy { it.order },
+                key = { _, item -> "batch_${g.id}_${item.id}" }
+            ) { _, item ->
+                val descriptor = remember(item) {
+                    ItemDescriptorFactory.from(context, item)
+                }
+
+                val itemSelectedByGroup = branchSelected
+                val itemSelectedDirectly = selectedTtsIds.contains(item.id)
+                val itemExcluded = excludedTtsIds.contains(item.id)
+                val itemSelected = (itemSelectedByGroup && !itemExcluded) || itemSelectedDirectly
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            if (itemSelectedByGroup) {
+                                if (itemExcluded) {
+                                    excludedTtsIds = excludedTtsIds - item.id
+                                } else {
+                                    excludedTtsIds = excludedTtsIds + item.id
+                                    selectedTtsIds = selectedTtsIds - item.id
+                                }
+                            } else {
+                                selectedTtsIds =
+                                    if (selectedTtsIds.contains(item.id)) {
+                                        selectedTtsIds - item.id
+                                    } else {
+                                        selectedTtsIds + item.id
+                                    }
+                            }
+                        }
+                        .padding(
+                            start = 8.dp,
+                            end = 8.dp,
+                            top = 4.dp,
+                            bottom = 4.dp
+                        ),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Checkbox(
+                        checked = itemSelected,
+                        onCheckedChange = { checked ->
+                            if (itemSelectedByGroup) {
+                                if (checked) {
+                                    excludedTtsIds = excludedTtsIds - item.id
+                                } else {
+                                    excludedTtsIds = excludedTtsIds + item.id
+                                    selectedTtsIds = selectedTtsIds - item.id
+                                }
+                            } else {
+                            selectedTtsIds =
+                                if (checked) {
+                                    selectedTtsIds + item.id
+                                } else {
+                                    selectedTtsIds - item.id
+                                }
+                        }
+                        }
+                    )
+
+                    Column(
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(
+                            text = "🎙️ ${item.displayName}",
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+
+                        Text(
+                            text = listOf(
+                                descriptor.tagName,
+                                descriptor.bottom
+                            ).filter {
+                                it.toString().isNotBlank()
+                            }.joinToString("  |  "),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            node.children.forEach { child ->
+                batchGroupTreeNode(
+                    node = child,
+                    level = level + 1,
+                    parentSelected = branchSelected
+                )
+            }
+        }
+    }
+
+    fun LazyListScope.groupTreeNode(
+        node: GroupTreeNode,
+        level: Int = 0,
+    ) {
+        val g = node.group
+        val allTts = node.allTts()
+        val checkState = allTts.count { it.isEnabled }.sizeToToggleableState(allTts.size)
+        val key = "g_${g.id}"
+
+        item(key = key) {
+    ShadowedDraggableItem(reorderableState = reorderState, key = key) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .detectReorderAfterLongPress(reorderState),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            val hasAutoTagButton = autoTagRuleByGroupName(g.name) != null
+
+            if (hasAutoTagButton) {
+                IconButton(
+                    modifier = Modifier.padding(start = (level * 20).dp),
+                    onClick = {
+                        autoTagAndSortGroup(node)
+                    }
+                ) {
+                    Text("🏷️")
+                }
+            }
+
+            Group(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(start = if (hasAutoTagButton) 0.dp else (level * 20).dp),
+                name = g.name,
+                isExpanded = g.isExpanded,
+                toggleableState = checkState,
+                onToggleableStateChange = {
+                    vm.updateGroupEnable(node, it)
+                },
+                onClick = {
+                    vm.updateGroupExpanded(g, !g.isExpanded)
+                },
+                onDelete = {
+                    fun deleteNode(target: GroupTreeNode) {
+                        target.children.forEach { deleteNode(it) }
+                        dbm.systemTtsV2.delete(*target.list.toTypedArray())
+                        dbm.systemTtsV2.deleteGroup(target.group)
+                    }
+
+                    deleteNode(node)
+                },
+                onRename = {
+                    dbm.systemTtsV2.updateGroup(g.copy(name = it))
+                },
+                onCopy = {
+                    scope.launch {
+                        val group = g.copy(
+                            id = System.currentTimeMillis(),
+                            name = it.ifBlank { context.getString(R.string.unnamed) },
+                            parentGroupId = g.parentGroupId
+                        )
+
+                        dbm.systemTtsV2.insertGroup(group)
+
+                        dbm.systemTtsV2.getByGroup(g.id)
+                            .forEachIndexed { index, tts ->
+                                dbm.systemTtsV2.insert(
+                                    tts.copy(
+                                        id = System.currentTimeMillis() + index,
+                                        groupId = group.id
+                                    )
+                                )
+                            }
+                    }
+                },
+                onEditAudioParams = {
+                    groupAudioParamsDialog = g
+                },
+                onEditGroupMembers = {
+                    editGroupMembersDialog = node
+                },
+                onExport = {
+                    showGroupExportSheet = node.toExportList()
+                },
+                onSort = {
+                    showSortDialog = node.list
+                },
+                onAddChildGroup = if (level == 0) {
+                    {
+                        addGroupParentId = g.id
+                        addGroupDialog = true
+                    }
+                } else {
+                    null
+                },
+                onPromoteToRoot = if (g.parentGroupId != 0L) {
+                    {
+                        scope.launch {
+                            withIO {
+                                vm.moveGroupToRoot(g)
+                            }
+                        }
+                    }
+                } else {
+                    null
+                },
+                onMoveToParent = if (g.parentGroupId == 0L && models.any { it.group.id != g.id }) {
+                    {
+                        moveGroupDialog = g
+                    }
+                } else {
+                    null
+                }
+            )
+        }
+    }
+}
+
+        if (g.isExpanded) {
+            itemsIndexed(
+                node.list.sortedBy { it.order },
+                key = { _, item -> "${g.id}_${item.id}" }
+            ) { _, item ->
+                ShadowedDraggableItem(
+                    reorderableState = reorderState,
+                    key = "${g.id}_${item.id}"
+                ) {
+                    val descriptor = remember(item) {
+                        ItemDescriptorFactory.from(context, item)
+                    }
+
+                    Item(
+                        reorderState = reorderState,
+                        modifier = Modifier.padding(
+                            start = 8.dp,
+                            end = 8.dp,
+                            top = 4.dp,
+                            bottom = 4.dp
+                        ),
+                        name = item.displayName,
+                        tagName = descriptor.tagName,
+                        type = descriptor.type,
+                        standby = descriptor.standby,
+                        enabled = item.isEnabled,
+                        onEnabledChange = {
+                            vm.updateTtsEnabled(item, it)
+                            if (it) SystemTtsService.notifyUpdateConfig()
+                        },
+                        desc = descriptor.desc,
+                        params = descriptor.bottom,
+                        onClick = {
+                            showQuickEdit = item
+                        },
+                        onLongClick = {
+                            switchSpeechTarget(item)
+                        },
+                        onCopy = {
+                            navigateToEdit(item.copy(id = System.currentTimeMillis()))
+                        },
+                        onDelete = {
+                            deleteTts = item
+                        },
+                        onEdit = {
+                            navigateToEdit(item)
+                        },
+                        onAudition = {
+                            if (item.config is TtsConfigurationDTO) {
+                                showAuditionDialog = item
+                            } else {
+                                context.toast(R.string.not_support_audition)
+                            }
+                        },
+                        onExport = {
+                            showExportSheet = listOf(
+                                item.copy(groupId = AbstractListGroup.DEFAULT_GROUP_ID)
+                            )
+                        }
+                    )
+                }
+            }
+
+            node.children.forEach { child ->
+                groupTreeNode(child, level + 1)
+            }
+        }
+    }
+
+    Scaffold(
+        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
+        topBar = {
+            NavTopAppBar(
+                scrollBehavior = scrollBehavior,
+                title = {
+                    if (isSearchMode) {
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .clip(CircleShape),
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            shape = CircleShape
+                        ) {
+                            TopSearchField(
+                                value = inputSearchKeyword,
+                                onValueChange = {
+                                    inputSearchKeyword = it
+                                }
+                            )
+                        }
+                    } else {
+                        Text(
+                            if (isBatchEditMode) {
+                                "已选择 $selectedCount 项"
+                            } else {
+                                stringResource(id = R.string.system_tts)
+                            }
+                        )
+                    }
+                },
+                actions = {
+                    if (isBatchEditMode) {
+    IconButton(
+        enabled = selectedCount > 0,
+        onClick = {
+            showBatchMoveDialog = true
+        }
+    ) {
+        Text("📦")
+    }
+
+    IconButton(
+        enabled = selectedCount > 0,
+        onClick = {
+            showSwitchPluginDialog = true
+        }
+    ) {
+        Text("🔌")
+    }
+
+    IconButton(
+        enabled = selectedCount > 0,
+        onClick = {
+            showBatchDeleteDialog = true
+        }
+    ) {
+        Text("🗑")
+    }
+
+    TextButton(
+        onClick = {
+            exitBatchEditMode()
+        }
+    ) {
+        Text("取消")
+    }
+} else {
+                        if (isSearchMode) {
+                            IconButton(
+                                onClick = {
+                                    exitSearchMode()
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "关闭"
+                                )
+                            }
+                        } else {
+                            IconButton(
+                                onClick = {
+                                    isFabExpanded = false
+                                    isFabTucked = true
+                                    isSearchMode = true
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Search,
+                                    contentDescription = "搜索"
+                                )
+                            }
+
+                            IconButton(onClick = { wrapGroupsDialog = true }) {
+                                Text("📚")
+                            }
+
+                            IconButton(
+                                enabled = !isRestarting,
+                                onClick = {
+                                    isRestarting = true
+                                    scope.launch {
+                                        delay(650)
+                                        restartApp(context)
+                                    }
+                                }
+                            ) {
+                                if (isRestarting) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier
+                                            .width(22.dp)
+                                            .height(22.dp),
+                                        strokeWidth = 2.dp
+                                    )
+                                } else {
+                                    Text("🚀")
+                                }
+                            }
+
+                                                          IconButton(
+                                  onClick = {
+                                      aiRulePreviewExpanded = false
+                                      showAiGenerateConfigDialog = true
+                                  }
+                              ) {
+                                  Text("🤖")
+                              }
+
+IconButton(
+                                onClick = {
+                                    exitSearchMode()
+                                    isFabExpanded = false
+                                    isFabTucked = true
+                                    isBatchEditMode = true
+                                }
+                            ) {
+                                Text("✏️")
+                            }
+
+                            IconButton(onClick = { showOptions = true }) {
+                                Icon(
+                                    Icons.Default.MoreVert,
+                                    stringResource(id = R.string.more_options)
+                                )
+                                MenuMoreOptions(
+                                    expanded = showOptions,
+                                    onDismissRequest = { showOptions = false },
+                                    onExportAll = {
+                                        showGroupExportSheet = models.flatMap { it.toExportList() }
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+            )
+        },
+    ) { paddingValues ->
+        Box(Modifier.padding(top = paddingValues.calculateTopPadding())) {
+            ControlBottomBarVisibility(listState, LocalBottomBarBehavior.current)
+
+            LazyColumn(
+                Modifier
+                    .fillMaxSize()
+                    .then(
+                        if ((!isSearchMode || inputSearchKeyword.isBlank()) && !isBatchEditMode) {
+                            Modifier.reorderable(state = reorderState)
+                        } else {
+                            Modifier
+                        }
+                    ),
+                state = listState
+            ) {
+                if (isBatchEditMode) {
+                    models.forEach { node ->
+                        batchGroupTreeNode(node)
+                    }
+                } else if (!isSearchMode || inputSearchKeyword.isBlank()) {
+                    models.forEach { node ->
+                        groupTreeNode(node)
+                    }
+                } else if (!canSearchInput) {
+                    item(key = "search_tip") {
+                        Text(
+                            text = "🔍 请输入至少 2 个字；数字编号可直接搜索",
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                        )
+                    }
+                } else {
+                    item(key = "search_result_count") {
+                        Text(
+                            text = "🔍 搜索结果：${searchResults.size}，最多显示前 50 个",
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                        )
+                    }
+
+                    searchResults.forEach { result ->
+                        searchTtsItem(
+                            item = result.tts,
+                            groupLevel = 0,
+                            keyPrefix = "search_${result.group.id}"
+                        )
+                    }
+                }
+
+                item {
+                    Spacer(Modifier.padding(bottom = AppDefaultProperties.LIST_END_PADDING))
+                }
+            }
+
+            if (!isSearchMode && inputSearchKeyword.isBlank() && !isBatchEditMode) {
+                val density = LocalDensity.current
+
+                var ballOffsetX by rememberSaveable { mutableStateOf(0f) }
+                var ballOffsetY by rememberSaveable { mutableStateOf(0f) }
+
+                fun closeFloatingMenu() {
+                    isFabExpanded = false
+                    isFabTucked = true
+                }
+
+                fun itemOffset(xDp: Int, yDp: Int): IntOffset {
+                    return IntOffset(
+                        x = ballOffsetX.roundToInt() + with(density) { xDp.dp.roundToPx() },
+                        y = ballOffsetY.roundToInt() + with(density) { yDp.dp.roundToPx() }
+                    )
+                }
+
+                if (isFabExpanded) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 18.dp, bottom = 24.dp)
+                            .offset {
+                                itemOffset(-96, -30)
+                            }
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.End
+                        ) {
+                            SideMenuButton(
+                                text = "角色管理",
+                                onClick = {
+                                    closeFloatingMenu()
+
+                                    val allTts = models.collectAllTts()
+
+                                    val target = allTts
+                                        .firstOrNull { item ->
+                                            item.displayName.trim() == "角色管理"
+                                        }
+                                        ?: allTts.firstOrNull { item ->
+                                            val config = item.config as? TtsConfigurationDTO
+                                            val source = config?.source as? PluginTtsSource
+
+                                            source?.pluginId == "mingwuyan" &&
+                                                    config.speechRule.tagRuleId == "mingwuyan"
+                                        }
+                                        ?: allTts.firstOrNull { item ->
+                                            val descriptor = ItemDescriptorFactory.from(context, item)
+                                            descriptor.tagName.toString().contains("在线音效")
+                                        }
+
+                                    if (target != null) {
+                                        navigateToEdit(target)
+                                    } else {
+                                        context.toast("未找到「角色管理」配置")
+                                    }
+                                }
+                            )
+
+                            Spacer(Modifier.height(8.dp))
+
+                            SideMenuButton(
+                                text = "添加本地",
+                                onClick = {
+                                    closeFloatingMenu()
+                                    navigateToEdit(
+                                        SystemTtsV2(
+                                            config = TtsConfigurationDTO(
+                                                source = LocalTtsSource(locale = AppConst.localeCode)
+                                            )
+                                        )
+                                    )
+                                }
+                            )
+
+                            Spacer(Modifier.height(8.dp))
+
+                            SideMenuButton(
+                                text = "添加插件",
+                                onClick = {
+                                    closeFloatingMenu()
+                                    addPluginDialog = true
+                                }
+                            )
+
+                            Spacer(Modifier.height(8.dp))
+
+                            SideMenuButton(
+                                text = "添加分组",
+                                onClick = {
+                                    closeFloatingMenu()
+                                    addGroupParentId = 0L
+                                    addGroupDialog = true
+                                }
+                            )
+
+                            Spacer(Modifier.height(8.dp))
+
+                            SideMenuButton(
+                                text = "添加BGM",
+                                onClick = {
+                                    closeFloatingMenu()
+                                    navigateToEdit(SystemTtsV2(config = BgmConfiguration()))
+                                }
+                            )
+                        }
+                    }
+                }
+
+                FloatingActionButton(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 18.dp, bottom = 24.dp)
+                        .offset {
+                            IntOffset(
+                                x = ballOffsetX.roundToInt(),
+                                y = ballOffsetY.roundToInt()
+                            )
+                        }
+                        .size(58.dp)
+                        .pointerInput(Unit) {
+                            detectDragGestures { _, dragAmount ->
+                                ballOffsetX += dragAmount.x
+                                ballOffsetY += dragAmount.y
+                            }
+                        },
+                    shape = CircleShape,
+                    onClick = {
+                        isFabExpanded = !isFabExpanded
+                        isFabTucked = !isFabExpanded
+                    }
+                ) {
+                    Text(
+                        text = if (isFabExpanded) "×" else "☰",
+                        fontSize = 24.sp
+                    )
+                }
+            }
+
+            LaunchedEffect(key1 = Unit) {
+                withIO {
+                    vm.checkListData(context)
+                }
+            }
+        }
+    }
+}

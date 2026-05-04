@@ -1,0 +1,430 @@
+package com.github.jing332.tts_server_android.service.systts.help
+
+import android.content.Context
+import com.github.jing332.common.utils.StringUtils
+import com.github.jing332.database.constants.ReplaceExecution
+import com.github.jing332.database.dbm
+import com.github.jing332.database.entities.SpeechRule
+import com.github.jing332.database.entities.systts.SpeechRuleInfo
+import com.github.jing332.tts.ConfigType
+import com.github.jing332.tts.error.TextProcessorError
+import com.github.jing332.tts.synthesizer.ITextProcessor
+import com.github.jing332.tts.synthesizer.TextSegment
+import com.github.jing332.tts.synthesizer.TtsConfiguration
+import com.github.jing332.tts_server_android.conf.SystemTtsConfig
+import com.github.jing332.tts_server_android.model.rhino.speech_rule.SpeechRuleEngine
+import com.github.michaelbull.result.Err
+import com.github.michaelbull.result.Ok
+import com.github.michaelbull.result.Result
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import kotlin.random.Random
+
+class TextProcessor : ITextProcessor {
+    private var isMultiVoice: Boolean = false
+
+    private val isSplitSentence: Boolean
+        get() = SystemTtsConfig.isSplitEnabled.value
+
+    private val isReplaceEnabled: Boolean
+        get() = SystemTtsConfig.isReplaceEnabled.value
+
+    private lateinit var appContext: Context
+    private lateinit var engine: SpeechRuleEngine
+
+    private val textReplacer = TextReplacer()
+
+    private var configs: List<TtsConfiguration> = emptyList()
+    private var speechRules: List<SpeechRuleInfo> = emptyList()
+    private var moduleEngines: List<Pair<SpeechRule, SpeechRuleEngine>> = emptyList()
+    private var lastModuleCtxJson: String = ""
+    private val random by lazy { Random(System.currentTimeMillis()) }
+
+    private fun trimSystemTtsLogIfNeeded(file: File) {
+        val maxBytes = 10L * 1024L * 1024L
+        val keepBytes = 5 * 1024 * 1024
+
+        runCatching {
+            if (!file.exists()) return
+            if (file.length() <= maxBytes) return
+
+            val bytes = file.readBytes()
+            val keep = bytes.takeLast(keepBytes).toByteArray()
+
+            file.writeText(
+                "---- 日志过大，已自动裁剪，只保留最近约 5MB ----\n",
+                Charsets.UTF_8
+            )
+            file.appendBytes(keep)
+        }
+    }
+
+    private fun appendSpeechRuleLog(context: Context, message: String) {
+        runCatching {
+            val dir = context.getExternalFilesDir("log") ?: return
+            if (!dir.exists()) dir.mkdirs()
+
+            val file = File(dir, "system_tts.log")
+            val time = SimpleDateFormat(
+                "yyyy-MM-dd HH:mm:ss.SSS",
+                Locale.getDefault()
+            ).format(Date())
+
+            file.appendText(
+                "$time I\n[SpeechRule] $message\n",
+                Charsets.UTF_8
+            )
+
+            trimSystemTtsLogIfNeeded(file)
+        }
+    }
+
+    private fun normalizeSpeechRuleLookupId(ruleId: String): String {
+        val value = ruleId.trim()
+        if (value.isBlank()) return value
+
+        val regex = Regex(
+            pattern = """([._-](db|dev|new|test|debug|bak|backup|manual)(_\d{3})?)$""",
+            option = RegexOption.IGNORE_CASE
+        )
+
+        return value.replace(regex, "")
+    }
+
+    private fun findSpeechRuleByIdWithBaseFallback(ruleId: String): SpeechRule? {
+        val exact = dbm.speechRuleDao.getByRuleId(ruleId)
+
+        if (exact != null) {
+            if (!exact.isModule) {
+                return exact
+            }
+
+            val mainRule = dbm.speechRuleDao.all.firstOrNull { rule ->
+                rule.projectId == exact.projectId &&
+                    !rule.isModule &&
+                    (
+                        rule.moduleId == "main" ||
+                            rule.moduleType == "main" ||
+                            rule.moduleType == "pipeline_entry"
+                    )
+            } ?: dbm.speechRuleDao.all.firstOrNull { rule ->
+                rule.projectId == exact.projectId && !rule.isModule
+            }
+
+            if (mainRule != null) {
+                appendSpeechRuleLog(
+                    context = appContext,
+                    message = "当前配置引用的是模块：${exact.moduleName.ifBlank { exact.name }}，已自动切换到项目入口规则：${mainRule.name}"
+                )
+
+                return mainRule
+            }
+        }
+
+        val baseId = normalizeSpeechRuleLookupId(ruleId)
+
+        val fallbackRule = dbm.speechRuleDao.allEnabled.firstOrNull { rule ->
+            !rule.isModule && normalizeSpeechRuleLookupId(rule.ruleId) == baseId
+        }
+
+        if (fallbackRule != null) {
+            return fallbackRule
+        }
+
+        val fallbackModule = dbm.speechRuleDao.all.firstOrNull { rule ->
+            rule.isModule && normalizeSpeechRuleLookupId(rule.ruleId) == baseId
+        }
+
+        if (fallbackModule != null) {
+            return dbm.speechRuleDao.all.firstOrNull { rule ->
+                rule.projectId == fallbackModule.projectId &&
+                    !rule.isModule &&
+                    (
+                        rule.moduleId == "main" ||
+                            rule.moduleType == "main" ||
+                            rule.moduleType == "pipeline_entry"
+                    )
+            } ?: dbm.speechRuleDao.all.firstOrNull { rule ->
+                rule.projectId == fallbackModule.projectId && !rule.isModule
+            }
+        }
+
+        return null
+    }
+
+    private fun loadEnabledModuleEngines(
+        context: Context,
+        mainRule: SpeechRule,
+    ): List<Pair<SpeechRule, SpeechRuleEngine>> {
+        val projectId = mainRule.projectId.trim()
+        if (projectId.isBlank()) return emptyList()
+
+        val modules = dbm.speechRuleDao.all
+            .asSequence()
+            .filter { it.projectId == projectId }
+            .filter { it.isModule }
+            .filter { it.isEnabled }
+            .filter { it.code.isNotBlank() }
+            .sortedWith(
+                compareBy<SpeechRule> { it.moduleOrder }
+                    .thenBy { it.order }
+            )
+            .toList()
+
+        if (modules.isNotEmpty()) {
+            appendSpeechRuleLog(
+                context = context,
+                message = "模块执行链已加载：${modules.size} 个模块"
+            )
+        }
+
+        return modules.mapNotNull { module ->
+            runCatching {
+                val moduleEngine = SpeechRuleEngine(context, module).apply {
+                    console.addLogListener { entry ->
+                        appendSpeechRuleLog(
+                            context = appContext,
+                            message = "[模块:${module.moduleName.ifBlank { module.name }}] ${entry.message}"
+                        )
+                    }
+
+                    eval()
+                }
+
+                module to moduleEngine
+            }.onFailure {
+                appendSpeechRuleLog(
+                    context = context,
+                    message = "模块加载失败：${module.moduleName.ifBlank { module.name }}，${it.message}"
+                )
+            }.getOrNull()
+        }
+    }
+
+    private fun buildModuleCtxJson(text: String): String {
+        return JSONObject()
+            .put("version", 1)
+            .put("text", text)
+            .put("segments", JSONArray())
+            .put("roles", JSONObject())
+            .put("emotions", JSONObject())
+            .put("route", JSONObject())
+            .put("meta", JSONObject())
+            .toString()
+    }
+
+    private fun readTextFromModuleCtx(ctxJson: String, fallback: String): String {
+        return runCatching {
+            val obj = JSONObject(ctxJson)
+
+            if (obj.has("text")) {
+                obj.optString("text", fallback)
+            } else {
+                fallback
+            }
+        }.getOrDefault(fallback)
+    }
+
+    private fun writeTextToModuleCtx(ctxJson: String, text: String): String {
+        return runCatching {
+            JSONObject(ctxJson)
+                .put("text", text)
+                .toString()
+        }.getOrElse {
+            buildModuleCtxJson(text)
+        }
+    }
+
+    private fun processTextByModules(text: String): String {
+        var currentText = text
+        var currentCtxJson = buildModuleCtxJson(text)
+
+        if (moduleEngines.isEmpty()) {
+            lastModuleCtxJson = currentCtxJson
+            return text
+        }
+
+        moduleEngines.forEach { pair ->
+            val module = pair.first
+            val moduleEngine = pair.second
+
+            runCatching {
+                val beforeCtxJson = currentCtxJson
+                val afterCtxJson = moduleEngine.processCtxIfExists(currentCtxJson)
+
+                if (afterCtxJson != beforeCtxJson) {
+                    currentCtxJson = afterCtxJson
+                    currentText = readTextFromModuleCtx(currentCtxJson, currentText)
+                } else {
+                    currentText = moduleEngine.processTextIfExists(currentText)
+                    currentCtxJson = writeTextToModuleCtx(currentCtxJson, currentText)
+                }
+            }.onFailure {
+                appendSpeechRuleLog(
+                    context = appContext,
+                    message = "模块执行失败：${module.moduleName.ifBlank { module.name }}，${it.message}"
+                )
+            }
+        }
+
+        lastModuleCtxJson = currentCtxJson
+        return currentText
+    }
+
+    override fun init(
+        context: Context,
+        configs: Map<Long, TtsConfiguration>,
+    ): Result<Unit, TextProcessorError> {
+        appContext = context.applicationContext
+        isMultiVoice = SystemTtsConfig.isMultiVoiceEnabled.value
+
+        if (isMultiVoice) {
+            val ruleId = configs.values.toList().component1().speechInfo.tagRuleId
+            val speechRule =
+                findSpeechRuleByIdWithBaseFallback(ruleId)
+                    ?: return Err(TextProcessorError.MissingRule(ruleId))
+
+            engine = SpeechRuleEngine(context, speechRule).apply {
+                console.addLogListener { entry ->
+                    appendSpeechRuleLog(
+                        context = appContext,
+                        message = entry.message.toString()
+                    )
+                }
+
+                eval()
+            }
+
+            moduleEngines = loadEnabledModuleEngines(context, speechRule)
+
+            this.configs =
+                configs.entries.map {
+                    it.value.copy(
+                        speechInfo = it.value.speechInfo.copy(configId = it.key)
+                    )
+                }
+
+            speechRules = this.configs.map { it.speechInfo }
+        } else {
+            moduleEngines = emptyList()
+            this.configs = configs.values.toList()
+            if (this.configs.isEmpty()) {
+                return Err(TextProcessorError.MissingConfig(ConfigType.SINGLE_VOICE))
+            }
+        }
+
+        loadReplacer()
+        return Ok(Unit)
+    }
+
+    fun loadReplacer() {
+        textReplacer.load()
+    }
+
+    private fun splitText(text: String): List<String> {
+        return if (!isSplitSentence) {
+            listOf(text)
+        } else if (isMultiVoice) {
+            try {
+                engine.splitText(text).map { it.toString() }
+            } catch (_: NoSuchMethodException) {
+                StringUtils.splitSentences(text)
+            }
+        } else {
+            StringUtils.splitSentences(text)
+        }
+    }
+
+    private fun replace(text: String, @ReplaceExecution execution: Int): String {
+        return if (isReplaceEnabled) {
+            textReplacer.replace(text, execution)
+        } else {
+            text
+        }
+    }
+
+    override fun process(
+        text: String,
+        presetConfig: TtsConfiguration?,
+    ): Result<List<TextSegment>, TextProcessorError> {
+        val resultList = mutableListOf<TextSegment>()
+        val beforeRuleText = replace(text, ReplaceExecution.BEFORE)
+        val replacedText = if (isMultiVoice) {
+            processTextByModules(beforeRuleText)
+        } else {
+            beforeRuleText
+        }
+
+        fun add(vararg fragments: TextSegment) {
+            fragments.forEach { f ->
+                resultList.add(
+                    TextSegment(
+                        text = replace(f.text, ReplaceExecution.AFTER),
+                        tts = f.tts
+                    )
+                )
+            }
+        }
+
+        fun splitAndAdd(text: String, config: TtsConfiguration) {
+            splitText(text).forEach {
+                add(TextSegment(text = it, tts = config))
+            }
+        }
+
+        try {
+            if (presetConfig != null) {
+                splitAndAdd(replacedText, presetConfig)
+            } else if (isMultiVoice) {
+                val fragments = engine.handleText(
+                    replacedText,
+                    speechRules,
+                    lastModuleCtxJson
+                )
+
+                fragments.forEach { txtWithTag ->
+                    if (txtWithTag.text.isNotBlank()) {
+                        val sameTagList = configs.filter {
+                            !it.speechInfo.isStandby && it.speechInfo.tag == txtWithTag.tag
+                        }
+
+                        val configFromId =
+                            sameTagList.find { it.speechInfo.configId == txtWithTag.id }
+
+                        val config = configFromId
+                            ?: sameTagList.randomOrNull(random)
+                            ?: configs.randomOrNull(random)
+                            ?: return Err(
+                                TextProcessorError.MissingConfig(
+                                    ConfigType.TAG,
+                                    "tag=${txtWithTag.tag}, id=${txtWithTag.id}"
+                                )
+                            )
+
+                        splitAndAdd(txtWithTag.text, config)
+                    }
+                }
+            } else {
+                val singleVoice = configs.randomOrNull(random)
+                    ?: return Err(
+                        TextProcessorError.MissingConfig(
+                            ConfigType.SINGLE_VOICE,
+                            "single voice"
+                        )
+                    )
+
+                splitAndAdd(replacedText, singleVoice)
+            }
+        } catch (e: UninitializedPropertyAccessException) {
+            return Err(TextProcessorError.Initialization)
+        } catch (e: Exception) {
+            return Err(TextProcessorError.HandleText(e))
+        }
+
+        return Ok(resultList)
+    }
+}

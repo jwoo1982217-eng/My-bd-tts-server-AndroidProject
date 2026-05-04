@@ -1,0 +1,81 @@
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.10.2/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+
+> Configure project :app
+WARNING: The option setting 'android.aapt2FromMavenOverride=/data/data/com.termux/files/usr/bin/aapt2' is experimental.
+
+> Task :build-logic:convention:checkKotlinGradlePluginConfigurationErrors
+> Task :build-logic:convention:compileKotlin UP-TO-DATE
+> Task :build-logic:convention:compileJava NO-SOURCE
+> Task :build-logic:convention:pluginDescriptors UP-TO-DATE
+> Task :build-logic:convention:processResources UP-TO-DATE
+> Task :build-logic:convention:classes UP-TO-DATE
+> Task :build-logic:convention:jar UP-TO-DATE
+> Task :lib-server:preBuild UP-TO-DATE
+> Task :app:buildTranslationArray UP-TO-DATE
+> Task :lib-common:preBuild UP-TO-DATE
+> Task :lib-database:preBuild UP-TO-DATE
+> Task :lib-compose:preBuild UP-TO-DATE
+> Task :lib-script:preBuild UP-TO-DATE
+> Task :lib-tts:preBuild UP-TO-DATE
+> Task :lib-script:preDebugBuild UP-TO-DATE
+> Task :lib-compose:preDebugBuild UP-TO-DATE
+> Task :lib-server:preDebugBuild UP-TO-DATE
+> Task :lib-database:preDebugBuild UP-TO-DATE
+> Task :app:preBuild UP-TO-DATE
+> Task :lib-tts:preDebugBuild UP-TO-DATE
+> Task :app:preAppDebugBuild UP-TO-DATE
+> Task :lib-common:preDebugBuild UP-TO-DATE
+> Task :lib-server:writeDebugAarMetadata UP-TO-DATE
+> Task :lib-database:writeDebugAarMetadata UP-TO-DATE
+> Task :lib-compose:writeDebugAarMetadata UP-TO-DATE
+> Task :lib-common:writeDebugAarMetadata UP-TO-DATE
+> Task :lib-script:writeDebugAarMetadata UP-TO-DATE
+> Task :lib-tts:writeDebugAarMetadata UP-TO-DATE
+> Task :app:checkAppDebugAarMetadata FAILED
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':app:checkAppDebugAarMetadata'.
+> A failure occurred while executing com.android.build.gradle.internal.tasks.CheckAarMetadataWorkAction
+   > 2 issues were found when checking AAR metadata:
+     
+       1.  Dependency 'androidx.core:core-ktx:1.15.0' requires libraries and applications that
+           depend on it to compile against version 35 or later of the
+           Android APIs.
+     
+           :app is currently compiled against android-34.
+     
+           Recommended action: Update this project to use a newer compileSdk
+           of at least 35, for example 35.
+     
+           Note that updating a library or application's compileSdk (which
+           allows newer APIs to be used) can be done separately from updating
+           targetSdk (which opts the app in to new runtime behavior) and
+           minSdk (which determines which devices the app can be installed
+           on).
+     
+       2.  Dependency 'androidx.core:core:1.15.0' requires libraries and applications that
+           depend on it to compile against version 35 or later of the
+           Android APIs.
+     
+           :app is currently compiled against android-34.
+     
+           Recommended action: Update this project to use a newer compileSdk
+           of at least 35, for example 35.
+     
+           Note that updating a library or application's compileSdk (which
+           allows newer APIs to be used) can be done separately from updating
+           targetSdk (which opts the app in to new runtime behavior) and
+           minSdk (which determines which devices the app can be installed
+           on).
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 13s
+12 actionable tasks: 2 executed, 10 up-to-date

@@ -1,0 +1,31 @@
+pluginManagement {
+    includeBuild("build-logic")
+    repositories {
+        gradlePluginPortal()
+        google()
+        mavenCentral()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+        maven { url 'https://jitpack.io' }
+    }
+
+    versionCatalogs {
+        libs {
+            from(files("./libs.versions.toml"))
+        }
+    }
+}
+
+rootProject.name = "TTS Server"
+include ':app'
+include ':lib-common'
+include ':lib-compose'
+include ':lib-database'
+include ':lib-tts'
+include ':lib-script'
+include ':lib-server'

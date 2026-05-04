@@ -1,0 +1,1579 @@
+package com.github.jing332.tts_server_android.compose.systts.speechrule
+
+import com.github.jing332.tts_server_android.compose.systts.ConfigImportBottomSheet
+import com.github.jing332.tts_server_android.service.systts.SystemTtsService
+import com.github.jing332.tts_server_android.constant.AppConst
+import kotlinx.serialization.decodeFromString
+import android.content.Intent
+import android.content.Context
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Input
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AppShortcut
+import androidx.compose.material.icons.filled.DeleteForever
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Output
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.unit.dp
+import com.github.jing332.compose.rememberLazyListReorderCache
+import com.github.jing332.compose.widgets.LazyListIndexStateSaver
+import com.github.jing332.compose.widgets.ShadowedDraggableItem
+import com.github.jing332.database.dbm
+import com.github.jing332.database.entities.SpeechRule
+import com.github.jing332.database.entities.systts.TtsConfigurationDTO
+import com.github.jing332.compose.widgets.TextFieldDialog
+import com.github.jing332.tts_server_android.R
+import com.github.jing332.tts_server_android.compose.LocalNavController
+import com.github.jing332.tts_server_android.compose.SharedViewModel
+import com.github.jing332.tts_server_android.compose.systts.ConfigDeleteDialog
+import com.github.jing332.tts_server_android.utils.MyTools
+import kotlinx.coroutines.flow.conflate
+import org.burnoutcrew.reorderable.detectReorderAfterLongPress
+import org.burnoutcrew.reorderable.rememberReorderableLazyListState
+import org.burnoutcrew.reorderable.reorderable
+import java.io.File
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SpeechRuleManagerScreen(sharedVM: SharedViewModel, finish: () -> Unit) {
+    val navController = LocalNavController.current
+    val context = LocalContext.current
+
+    var showProjectActionDialog by remember { mutableStateOf(false) }
+    var showCreateProjectDialog by remember { mutableStateOf(false) }
+    var showCreateProjectModeDialog by remember { mutableStateOf(false) }
+    var createProjectMode by remember { mutableStateOf("full_rule") }
+    var showImportProjectSheet by remember { mutableStateOf(false) }
+    var pendingCreateModuleStageGroup by remember { mutableStateOf<SpeechRuleProjectUiGroup?>(null) }
+    var pendingImportModuleStageGroup by remember { mutableStateOf<SpeechRuleProjectUiGroup?>(null) }
+    var createModuleStage by remember { mutableStateOf("pre") }
+    var importModuleStage by remember { mutableStateOf("pre") }
+    var showEmotionApiDialog by remember { mutableStateOf(false) }
+    var emotionApiText by remember { mutableStateOf("") }
+    var moduleApiFileNameState by remember { mutableStateOf("") }
+
+    if (showEmotionApiDialog) {
+        TextFieldDialog(
+            title = "模型设置",
+            text = emotionApiText,
+            onTextChange = { emotionApiText = it },
+            onDismissRequest = { showEmotionApiDialog = false }
+        ) {
+            writeModuleApiText(context, moduleApiFileNameState, emotionApiText)
+            showEmotionApiDialog = false
+        }
+    }
+
+    if (showProjectActionDialog) {
+        AlertDialog(
+            onDismissRequest = { showProjectActionDialog = false },
+            title = { Text("朗读规则项目") },
+            text = {
+                Text("请选择要创建完整朗读规则项目，还是导入完整朗读规则项目。\n\n完整规则项目只能有一个主规则。")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showImportProjectSheet = true
+                        showProjectActionDialog = false
+                    }
+                ) {
+                    Text("导入完整规则项目")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showCreateProjectModeDialog = true
+                        showProjectActionDialog = false
+                    }
+                ) {
+                    Text("新建空项目")
+                }
+            }
+        )
+    }
+
+    if (showCreateProjectModeDialog) {
+        AlertDialog(
+            onDismissRequest = { showCreateProjectModeDialog = false },
+            title = { Text("新建项目类型") },
+            text = {
+                Text("完整规则项目：1 个完整主规则 + 可选外挂模块。\n\n模块流水线项目：1 个入口规则 + 多个分工模块。")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        createProjectMode = "full_rule"
+                        showCreateProjectDialog = true
+                        showCreateProjectModeDialog = false
+                    }
+                ) {
+                    Text("完整规则项目")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        createProjectMode = "pipeline"
+                        showCreateProjectDialog = true
+                        showCreateProjectModeDialog = false
+                    }
+                ) {
+                    Text("模块流水线项目")
+                }
+            }
+        )
+    }
+
+    if (showCreateProjectDialog) {
+        var projectName by remember { mutableStateOf("") }
+
+        TextFieldDialog(
+            title = "新建朗读规则项目",
+            text = projectName,
+            onTextChange = { projectName = it },
+            onDismissRequest = { showCreateProjectDialog = false }
+        ) {
+            val name = projectName.trim().ifBlank { "新朗读规则项目" }
+            val now = System.currentTimeMillis()
+            val safeProject = safeRuleModuleIdPart(name).ifBlank { "project" }
+            val projectId = "${safeProject}_$now"
+
+            val isPipelineProject = createProjectMode == "pipeline"
+            val entryName = if (isPipelineProject) "流水线入口规则" else "完整朗读规则"
+            val entryIcon = if (isPipelineProject) "🚪" else "📄"
+            val entryRuleCode = if (isPipelineProject) {
+                """
+let SpeechRuleJS = {
+    name: "流水线入口规则",
+    id: "pipeline.entry",
+    author: "system",
+    version: 1,
+
+    tags: {
+        narrator: "旁白"
+    },
+
+    getTagName: function(tag, tagData) {
+        return this.tags[tag] || tag;
+    },
+
+    handleText: function(text, tagsDataMap) {
+        console.log("流水线入口收到文本：" + text);
+
+        return [
+            {
+                text: text,
+                tag: "narrator",
+                id: 0
+            }
+        ];
+    }
+};
+                """.trimIndent()
+            } else {
+                ""
+            }
+
+            dbm.speechRuleDao.insert(
+                SpeechRule(
+                    id = now,
+                    isEnabled = false,
+                    name = "$name - $entryName",
+                    version = 1,
+                    ruleId = uniqueSpeechRuleModuleRuleId("${projectId}_main"),
+                    author = if (isPipelineProject) "system" else "",
+                    code = entryRuleCode,
+                    order = dbm.speechRuleDao.all.size,
+                    projectId = projectId,
+                    projectName = name,
+                    projectMode = createProjectMode,
+                    moduleId = "main",
+                    moduleName = "$entryIcon $entryName",
+                    moduleType = if (isPipelineProject) "pipeline_entry" else "main",
+                    moduleOrder = 0,
+                    isModule = false
+                )
+            )
+
+            showCreateProjectDialog = false
+        }
+    }
+
+    if (showImportProjectSheet) {
+        ConfigImportBottomSheet(
+            onDismissRequest = { showImportProjectSheet = false },
+            onImport = { json: String ->
+                val now = System.currentTimeMillis()
+                val importedRules = AppConst.jsonBuilder.decodeFromString<List<SpeechRule>>(json)
+                val startOrder = dbm.speechRuleDao.all.size
+
+                importedRules.forEachIndexed { index, rule ->
+                    val rawProjectName = rule.projectName
+                        .ifBlank { rule.name }
+                        .ifBlank { "导入朗读规则项目" }
+
+                    val safeProject = safeRuleModuleIdPart(
+                        rule.projectId
+                            .ifBlank { rule.ruleId }
+                            .ifBlank { rawProjectName }
+                    ).ifBlank { "project" }
+
+                    val projectId = "${safeProject}_${now + index}"
+
+                    dbm.speechRuleDao.insert(
+                        rule.copy(
+                            id = now + index,
+                            isEnabled = false,
+                            name = rule.name.ifBlank { rawProjectName },
+                            ruleId = uniqueSpeechRuleModuleRuleId(
+                                rule.ruleId.ifBlank { "${projectId}_main" }
+                            ),
+                            order = startOrder + index,
+                            projectId = projectId,
+                            projectName = rawProjectName,
+                            projectMode = "full_rule",
+                            moduleId = "main",
+                            moduleName = "完整朗读规则",
+                            moduleType = "main",
+                            moduleOrder = 0,
+                            isModule = false
+                        )
+                    )
+                }
+
+                showImportProjectSheet = false
+                importedRules.size
+            }
+        )
+    }
+
+    var showExportSheet by remember { mutableStateOf<List<SpeechRule>?>(null) }
+    if (showExportSheet != null)
+        SpeechRuleExportBottomSheet(
+            onDismissRequest = { showExportSheet = null },
+            list = showExportSheet!!,
+        )
+
+    var showDeleteDialog by remember { mutableStateOf<SpeechRule?>(null) }
+    var renameModuleRule by remember { mutableStateOf<SpeechRule?>(null) }
+    if (showDeleteDialog != null)
+        ConfigDeleteDialog(
+            onDismissRequest = { showDeleteDialog = null },
+            content = showDeleteDialog!!.name
+        ) {
+            dbm.speechRuleDao.delete(showDeleteDialog!!)
+            showDeleteDialog = null
+        }
+
+
+    renameModuleRule?.let { rule ->
+        var moduleName by remember(rule.id) {
+            mutableStateOf(rule.moduleName.ifBlank { rule.name })
+        }
+
+        TextFieldDialog(
+            title = "模块改名",
+            text = moduleName,
+            onTextChange = { moduleName = it },
+            onDismissRequest = { renameModuleRule = null }
+        ) {
+            val newName = moduleName.trim().ifBlank {
+                rule.moduleName.ifBlank { rule.name }
+            }
+
+            dbm.speechRuleDao.update(
+                rule.copy(
+                    moduleName = newName,
+                    name = "${rule.projectName.ifBlank { rule.projectId }} - $newName"
+                )
+            )
+
+            renameModuleRule = null
+        }
+    }
+
+    val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
+    Scaffold(
+        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
+        topBar = {
+            TopAppBar(
+                scrollBehavior = scrollBehavior,
+                title = { Text(stringResource(id = R.string.speech_rule_manager)) },
+                navigationIcon = {
+                    IconButton(onClick = finish) {
+                        Icon(
+                            Icons.AutoMirrored.Default.ArrowBack,
+                            stringResource(id = R.string.nav_back)
+                        )
+                    }
+                },
+
+                actions = {
+                    IconButton(onClick = {
+                        showProjectActionDialog = true
+                    }) {
+                        Icon(Icons.Default.Add, stringResource(id = R.string.add_config))
+                    }
+
+                    var showOptions by remember { mutableStateOf(false) }
+                    IconButton(onClick = { showOptions = true }) {
+                        Icon(Icons.Default.MoreVert, stringResource(id = R.string.more_options))
+
+                        DropdownMenu(
+                            expanded = showOptions,
+                            onDismissRequest = { showOptions = false }) {
+DropdownMenuItem(
+                                text = { Text("导入完整规则项目") },
+                                onClick = {
+                                    showOptions = false
+                                    showImportProjectSheet = true
+                                },
+                                leadingIcon = { Icon(Icons.AutoMirrored.Default.Input, null) }
+                            )
+
+                            DropdownMenuItem(
+                                text = { Text(text = stringResource(id = R.string.export_config)) },
+                                onClick = {
+                                    showOptions = false
+                                    showExportSheet = dbm.speechRuleDao.allEnabled
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Output, null)
+                                }
+                            )
+
+                            DropdownMenuItem(
+                                text = { Text(stringResource(id = R.string.desktop_shortcut)) },
+                                onClick = {
+                                    showOptions = false
+                                    MyTools.addShortcut(
+                                        context,
+                                        context.getString(R.string.speech_rule_manager),
+                                        "speech_rule",
+                                        R.drawable.ic_shortcut_speech_rule,
+                                        Intent(context, SpeechRuleManagerActivity::class.java)
+                                    )
+                                },
+                                leadingIcon = { Icon(Icons.Default.AppShortcut, null) }
+                            )
+                        }
+                    }
+                }
+
+            )
+        }
+    ) { paddingValues ->
+//        LaunchedEffect(Unit) {
+//            dbm.speechRuleDao.all.forEachIndexed { index, speechRule ->
+//                dbm.speechRuleDao.update(speechRule.copy(order = index))
+//            }
+//        }
+
+        val flowAll = remember { dbm.speechRuleDao.flowAll().conflate() }
+        val list by flowAll.collectAsState(initial = emptyList())
+
+        val listState = remember { LazyListState() }
+        LazyListIndexStateSaver(
+            models = list,
+            listState = listState,
+        )
+
+        var expandedProjectKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
+        var renameProjectGroup by remember { mutableStateOf<SpeechRuleProjectUiGroup?>(null) }
+        var addModuleProjectGroup by remember { mutableStateOf<SpeechRuleProjectUiGroup?>(null) }
+        var createModuleProjectGroup by remember { mutableStateOf<SpeechRuleProjectUiGroup?>(null) }
+        var importModuleProjectGroup by remember { mutableStateOf<SpeechRuleProjectUiGroup?>(null) }
+        var deleteProjectGroup by remember { mutableStateOf<SpeechRuleProjectUiGroup?>(null) }
+        var modeProjectGroup by remember { mutableStateOf<SpeechRuleProjectUiGroup?>(null) }
+        val projectGroups = remember(list) { list.toProjectGroups() }
+        val activeProjectKey = remember(list) {
+            val enabledMainRules = list.filter {
+                !it.isModule && it.isEnabled
+            }
+
+            val currentTagRuleIds = runCatching {
+                dbm.systemTtsV2.all
+                    .mapNotNull { tts ->
+                        val config = tts.config as? TtsConfigurationDTO
+                        config?.speechRule?.tagRuleId?.takeIf { it.isNotBlank() }
+                    }
+                    .toSet()
+            }.getOrDefault(emptySet())
+
+            val currentRule = enabledMainRules.firstOrNull {
+                it.ruleId in currentTagRuleIds
+            } ?: enabledMainRules.firstOrNull()
+
+            currentRule?.projectGroupKey().orEmpty()
+        }
+
+        LaunchedEffect(list) {
+            list.filter {
+                it.projectId.isBlank() || it.projectName.isBlank() || it.moduleId.isBlank()
+            }.forEach { rule ->
+                dbm.speechRuleDao.update(
+                    rule.copy(
+                        projectId = rule.projectId.ifBlank {
+                            rule.ruleId.ifBlank { rule.id.toString() }
+                        },
+                        projectName = rule.projectName.ifBlank {
+                            rule.name.ifBlank { rule.ruleId.ifBlank { "未命名朗读规则" } }
+                        },
+                        projectMode = rule.projectMode.ifBlank { "full_rule" },
+                        moduleId = rule.moduleId.ifBlank { "main" },
+                        moduleName = rule.moduleName.ifBlank { "完整朗读规则" },
+                        moduleType = rule.moduleType.ifBlank { "main" },
+                        moduleOrder = rule.moduleOrder,
+                        isModule = false
+                    )
+                )
+            }
+        }
+
+
+
+        modeProjectGroup?.let { group ->
+            val currentMode = group.rules.firstOrNull()?.projectMode?.ifBlank { "full_rule" } ?: "full_rule"
+
+            AlertDialog(
+                onDismissRequest = {
+                    modeProjectGroup = null
+                },
+                title = {
+                    Text("项目类型")
+                },
+                text = {
+                    Text(
+                        if (currentMode == "pipeline") {
+                            "当前类型：模块流水线项目\n\n适合以后拆分成整章分析、角色识别、情绪识别、音色路由等模块。"
+                        } else {
+                            "当前类型：完整规则项目\n\n适合完整朗读规则，也可以外挂少量增强模块。"
+                        }
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            group.rules.forEach { rule ->
+                                dbm.speechRuleDao.update(rule.copy(projectMode = "full_rule"))
+                            }
+                            modeProjectGroup = null
+                        }
+                    ) {
+                        Text("完整规则")
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            group.rules.forEach { rule ->
+                                dbm.speechRuleDao.update(rule.copy(projectMode = "pipeline"))
+                            }
+                            modeProjectGroup = null
+                        }
+                    ) {
+                        Text("模块流水线")
+                    }
+                }
+            )
+        }
+
+        deleteProjectGroup?.let { group ->
+            val isActive = activeProjectKey == group.key
+
+            AlertDialog(
+                onDismissRequest = {
+                    deleteProjectGroup = null
+                },
+                title = {
+                    Text("🗑️")
+                },
+                text = {
+                    Text(
+                        if (isActive) {
+                            "当前启用项目不能删除。请先启用其它项目，再删除这个项目。"
+                        } else {
+                            "确定删除项目「${group.name}」吗？\n\n会同时删除这个项目下面的完整规则和所有模块。"
+                        }
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            if (!isActive) {
+                                group.rules.forEach { rule ->
+                                    dbm.speechRuleDao.delete(rule)
+                                }
+                                deleteProjectGroup = null
+                            }
+                        }
+                    ) {
+                        Text(if (isActive) "当前项目不可删除" else "确定删除")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { deleteProjectGroup = null }) {
+                        Text("取消")
+                    }
+                }
+            )
+        }
+
+        renameProjectGroup?.let { group ->
+            var name by remember(group.key) { mutableStateOf(group.name) }
+
+            TextFieldDialog(
+                title = "项目改名",
+                text = name,
+                onTextChange = { name = it },
+                onDismissRequest = { renameProjectGroup = null }
+            ) {
+                val newName = name.trim().ifBlank { group.name }
+
+                group.rules.forEach { rule ->
+                    dbm.speechRuleDao.update(
+                        rule.copy(projectName = newName)
+                    )
+                }
+
+                renameProjectGroup = null
+            }
+        }
+
+        addModuleProjectGroup?.let { group ->
+            AlertDialog(
+                onDismissRequest = {
+                    addModuleProjectGroup = null
+                },
+                title = {
+                    Text("添加模块 - ${group.name}")
+                },
+                text = {
+                    Column {
+                        Text("请选择添加方式")
+
+                        if (isFullRuleProject(group)) {
+                            TextButton(
+                                modifier = Modifier.fillMaxWidth(),
+                                onClick = {
+                                    createModuleStage = "pre"
+                                    createModuleProjectGroup = group
+                                    addModuleProjectGroup = null
+                                }
+                            ) {
+                                Text("新建前置模块")
+                            }
+
+                            TextButton(
+                                modifier = Modifier.fillMaxWidth(),
+                                onClick = {
+                                    createModuleStage = "post"
+                                    createModuleProjectGroup = group
+                                    addModuleProjectGroup = null
+                                }
+                            ) {
+                                Text("新建后置模块")
+                            }
+
+                            TextButton(
+                                modifier = Modifier.fillMaxWidth(),
+                                onClick = {
+                                    importModuleStage = "pre"
+                                    importModuleProjectGroup = group
+                                    addModuleProjectGroup = null
+                                }
+                            ) {
+                                Text("导入前置模块")
+                            }
+
+                            TextButton(
+                                modifier = Modifier.fillMaxWidth(),
+                                onClick = {
+                                    importModuleStage = "post"
+                                    importModuleProjectGroup = group
+                                    addModuleProjectGroup = null
+                                }
+                            ) {
+                                Text("导入后置模块")
+                            }
+                        } else {
+                            TextButton(
+                                modifier = Modifier.fillMaxWidth(),
+                                onClick = {
+                                    createModuleStage = "pre"
+                                    createModuleProjectGroup = group
+                                    addModuleProjectGroup = null
+                                }
+                            ) {
+                                Text("新建空模块")
+                            }
+
+                            TextButton(
+                                modifier = Modifier.fillMaxWidth(),
+                                onClick = {
+                                    importModuleStage = "pre"
+                                    importModuleProjectGroup = group
+                                    addModuleProjectGroup = null
+                                }
+                            ) {
+                                Text("导入模块")
+                            }
+                        }
+                    }
+                },
+                confirmButton = {},
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            addModuleProjectGroup = null
+                        }
+                    ) {
+                        Text("取消")
+                    }
+                }
+            )
+        }
+
+        pendingCreateModuleStageGroup?.let { group ->
+            AlertDialog(
+                onDismissRequest = {
+                    pendingCreateModuleStageGroup = null
+                },
+                title = {
+                    Text("选择模块阶段")
+                },
+                text = {
+                    Text("前置模块会在完整朗读规则之前运行。\n\n后置模块会在完整朗读规则分析出分句、角色、tag 之后运行。")
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            createModuleStage = "pre"
+                            createModuleProjectGroup = group
+                            pendingCreateModuleStageGroup = null
+                        }
+                    ) {
+                        Text("前置模块")
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            createModuleStage = "post"
+                            createModuleProjectGroup = group
+                            pendingCreateModuleStageGroup = null
+                        }
+                    ) {
+                        Text("后置模块")
+                    }
+                }
+            )
+        }
+
+        pendingImportModuleStageGroup?.let { group ->
+            AlertDialog(
+                onDismissRequest = {
+                    pendingImportModuleStageGroup = null
+                },
+                title = {
+                    Text("选择模块阶段")
+                },
+                text = {
+                    Text("前置模块会在完整朗读规则之前运行。\n\n后置模块会在完整朗读规则分析出分句、角色、tag 之后运行。")
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            importModuleStage = "pre"
+                            importModuleProjectGroup = group
+                            pendingImportModuleStageGroup = null
+                        }
+                    ) {
+                        Text("前置模块")
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            importModuleStage = "post"
+                            importModuleProjectGroup = group
+                            pendingImportModuleStageGroup = null
+                        }
+                    ) {
+                        Text("后置模块")
+                    }
+                }
+            )
+        }
+
+        createModuleProjectGroup?.let { group ->
+            var moduleName by remember(group.key) { mutableStateOf("") }
+
+            TextFieldDialog(
+                title = "新建空模块 - ${group.name}",
+                text = moduleName,
+                onTextChange = { moduleName = it },
+                onDismissRequest = { createModuleProjectGroup = null }
+            ) {
+                val targetModuleName = moduleName.trim().ifBlank { "新模块" }
+                val now = System.currentTimeMillis()
+                val safeProject = safeRuleModuleIdPart(group.key).ifBlank { "project" }
+                val safeModule = safeRuleModuleIdPart(targetModuleName).ifBlank { "module" }
+
+                dbm.speechRuleDao.insert(
+                    SpeechRule(
+                        id = now,
+                        isEnabled = false,
+                        name = "${group.name} - $targetModuleName",
+                        version = 1,
+                        ruleId = uniqueSpeechRuleModuleRuleId("${safeProject}_${safeModule}_$now"),
+                        author = "",
+                          code = if (isFullRuleProject(group)) {
+                              newEmptyModuleCode(targetModuleName, createModuleStage)
+                          } else {
+                              ""
+                          },
+                          projectId = group.key,
+                        projectName = group.name,
+                        projectMode = group.rules.firstOrNull()?.projectMode?.ifBlank { "full_rule" } ?: "full_rule",
+                        moduleId = "${safeModule}_$now",
+                        moduleName = targetModuleName,
+                        moduleType = if (isFullRuleProject(group)) {
+                              normalizeModuleStage(createModuleStage)
+                          } else {
+                              "custom"
+                          },
+                          moduleOrder = group.rules.size,
+                        isModule = true
+                    )
+                )
+
+                expandedProjectKeys = expandedProjectKeys + group.key
+                createModuleProjectGroup = null
+            }
+        }
+
+        importModuleProjectGroup?.let { group: SpeechRuleProjectUiGroup ->
+            ConfigImportBottomSheet(
+                onDismissRequest = {
+                    importModuleProjectGroup = null
+                },
+                onImport = { json: String ->
+                    val now = System.currentTimeMillis()
+                    val importedRules = AppConst.jsonBuilder.decodeFromString<List<SpeechRule>>(json)
+
+                    importedRules.forEachIndexed { index, rule ->
+                        val rawModuleName = rule.moduleName
+                            .ifBlank { rule.name }
+                            .ifBlank { "导入模块" }
+
+                        val safeModule = safeRuleModuleIdPart(
+                            rule.moduleId.ifBlank { rawModuleName }
+                        ).ifBlank { "module" }
+
+                        dbm.speechRuleDao.insert(
+                            rule.copy(
+                                id = now + index,
+                                isEnabled = false,
+                                ruleId = uniqueSpeechRuleModuleRuleId(
+                                    rule.ruleId.ifBlank { "${group.key}_${safeModule}_$now" }
+                                ),
+                                projectId = group.key,
+                                projectName = group.name,
+                                projectMode = group.rules.firstOrNull()?.projectMode?.ifBlank { "full_rule" } ?: "full_rule",
+                                moduleId = "${safeModule}_${now + index}",
+                                moduleName = rawModuleName,
+                                  code = if (isFullRuleProject(group)) {
+                                      ensureModuleStageInCode(rule.code, importModuleStage, rawModuleName)
+                                  } else {
+                                      rule.code
+                                  },
+                                  moduleType = if (isFullRuleProject(group)) {
+                                      normalizeModuleStage(importModuleStage)
+                                  } else {
+                                      rule.moduleType.ifBlank { "imported" }
+                                  },
+                                  moduleOrder = group.rules.size + index,
+                                isModule = true
+                            )
+                        )
+                    }
+
+                    expandedProjectKeys = expandedProjectKeys + group.key
+                    importModuleProjectGroup = null
+
+                    importedRules.size
+                }
+            )
+        }
+
+        fun enableSpeechRuleProject(group: SpeechRuleProjectUiGroup) {
+            val mainRule = group.rules.firstOrNull {
+                !it.isModule || it.moduleType == "main" || it.moduleId == "main"
+            } ?: group.rules.firstOrNull() ?: return
+
+            val allRules = dbm.speechRuleDao.all
+            val knownRuleIds = allRules
+                .map { it.ruleId }
+                .filter { it.isNotBlank() }
+                .toSet()
+
+            allRules
+                .filter { !it.isModule }
+                .forEach { rule ->
+                    val shouldEnable = rule.id == mainRule.id
+                    if (rule.isEnabled != shouldEnable) {
+                        dbm.speechRuleDao.update(
+                            rule.copy(isEnabled = shouldEnable)
+                        )
+                    }
+                }
+
+            val currentProjectCode = group.rules.joinToString("\n") { it.code }
+
+            val updatedTtsList = dbm.systemTtsV2.all.mapNotNull { tts ->
+                val config = tts.config as? TtsConfigurationDTO ?: return@mapNotNull null
+                val speechRule = config.speechRule
+                val currentRuleId = speechRule.tagRuleId
+
+                val speechTag = speechRule.tag.orEmpty()
+                val speechTagName = speechRule.tagName.orEmpty()
+
+                val belongsToCurrentProject =
+                    speechTagName.isNotBlank() && currentProjectCode.contains(speechTagName) ||
+                            speechTag.isNotBlank() &&
+                            speechTag != "dialogue" &&
+                            currentProjectCode.contains(speechTag)
+
+                val shouldSwitch =
+                    currentRuleId.isBlank() ||
+                            currentRuleId in knownRuleIds ||
+                            currentRuleId.startsWith("mingwuyan") ||
+                            currentRuleId.contains("mingwuyan", ignoreCase = true) ||
+                            belongsToCurrentProject
+
+                if (!shouldSwitch || currentRuleId == mainRule.ruleId) {
+                    return@mapNotNull null
+                }
+
+                tts.copy(
+                    config = config.copy(
+                        speechRule = speechRule.copy(
+                            tagRuleId = mainRule.ruleId
+                        )
+                    )
+                )
+            }
+
+            if (updatedTtsList.isNotEmpty()) {
+                dbm.systemTtsV2.update(*updatedTtsList.toTypedArray())
+            }
+
+            SystemTtsService.notifyUpdateConfig()
+        }
+
+        val projectCache = rememberLazyListReorderCache(projectGroups)
+        val projectReorderState = rememberReorderableLazyListState(
+            listState = listState,
+            onMove = { from, to ->
+                if (expandedProjectKeys.isEmpty()) {
+                    projectCache.move(from.index, to.index)
+                }
+            },
+            onDragEnd = { _, _ ->
+                if (expandedProjectKeys.isEmpty()) {
+                    projectCache.list.forEachIndexed { projectIndex, group ->
+                        group.rules.forEachIndexed { moduleIndex, rule ->
+                            val newOrder = projectIndex * 1000 + moduleIndex
+
+                            if (rule.order != newOrder) {
+                                dbm.speechRuleDao.update(
+                                    rule.copy(order = newOrder)
+                                )
+                            }
+                        }
+                    }
+
+                    projectCache.ended()
+                }
+            }
+        )
+
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+                .then(
+                    if (expandedProjectKeys.isEmpty()) {
+                        Modifier.reorderable(projectReorderState)
+                    } else {
+                        Modifier
+                    }
+                ),
+            state = projectReorderState.listState,
+        ) {
+            projectCache.list.forEach { group ->
+                val rule = group.rules.firstOrNull() ?: return@forEach
+                val expanded = expandedProjectKeys.contains(group.key)
+                val isActiveProject = activeProjectKey == group.key
+                val enabledCount = group.rules.count { it.isEnabled }
+                val projectModeLabel = if (
+                    group.rules.firstOrNull()?.projectMode == "pipeline"
+                ) {
+                    "流水线"
+                } else {
+                    "完整规则"
+                }
+
+                item(key = "project_${group.key}") {
+                    ShadowedDraggableItem(
+                        reorderableState = projectReorderState,
+                        key = "project_${group.key}"
+                    ) {
+                        ElevatedCard(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp, vertical = 5.dp)
+                                .then(
+                                    if (expandedProjectKeys.isEmpty()) {
+                                        Modifier.detectReorderAfterLongPress(projectReorderState)
+                                    } else {
+                                        Modifier
+                                    }
+                                ),
+                        onClick = {
+                            expandedProjectKeys =
+                                if (expanded) {
+                                    expandedProjectKeys - group.key
+                                } else {
+                                    expandedProjectKeys + group.key
+                                }
+                        }
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = if (isActiveProject) {
+                                    "✅ 📦 ${group.name}"
+                                } else if (expanded) {
+                                    "▼ 📦 ${group.name}"
+                                } else {
+                                    "▶ 📦 ${group.name}"
+                                },
+                                modifier = Modifier.weight(1f)
+                            )
+
+                            Text(
+                                text = "$projectModeLabel | ${group.rules.size} 模块 / $enabledCount 启用"
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            TextButton(onClick = { enableSpeechRuleProject(group) }) {
+                                Text(if (isActiveProject) "✅" else "🚀")
+                            }
+
+                            TextButton(onClick = { renameProjectGroup = group }) {
+                                Text("✏️")
+                            }
+
+                            TextButton(onClick = { addModuleProjectGroup = group }) {
+                                Text("🧩")
+                            }
+
+                                                                TextButton(onClick = { modeProjectGroup = group }) {
+                                    Text("🔀")
+                                }
+
+                                TextButton(
+                                    onClick = {
+                                        showExportSheet = group.rules.sortedWith(
+                                            compareBy<SpeechRule> { if (it.isModule) 1 else 0 }
+                                                .thenBy { it.moduleOrder }
+                                                .thenBy { it.order }
+                                        )
+                                    }
+                                ) {
+                                    Text("📤")
+                                }
+
+                                TextButton(onClick = { deleteProjectGroup = group }) {
+                                    Text("🗑️")
+                                }
+                        }
+                        }
+                    }
+                }
+
+                if (expanded) {
+                    itemsIndexed(
+                        group.rules.sortedWith(
+                              compareBy<SpeechRule> { speechRuleUiStageOrder(it) }
+                                  .thenBy { it.moduleOrder }
+                                  .thenBy { it.order }
+                                  .thenBy { it.id }
+                          ),
+                        key = { _, rule -> "rule_${rule.id}" }
+                    ) { _, rule ->
+                        Item(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 18.dp, vertical = 4.dp),
+                            name = if (rule.isModule) {
+                                "🧩 ${if (!rule.isModule && group.rules.firstOrNull()?.projectMode == "pipeline") "🚪 流水线入口规则" else rule.moduleDisplayName()}"
+                            } else {
+                                "📄 ${rule.moduleDisplayName()}"
+                            },
+                            desc = if (rule.isModule) {
+                                "${speechRuleUiStageLabel(rule)} | 顺序 ${rule.moduleOrder} | ${rule.author} - v${rule.version}"
+                            } else {
+                                if (!rule.isModule && group.rules.firstOrNull()?.projectMode == "pipeline") {
+                                    "流水线入口规则 | ${rule.author} - v${rule.version}"
+                                } else {
+                                    "完整朗读规则 | ${rule.author} - v${rule.version}"
+                                }
+                            },
+                            isEnabled = rule.isEnabled,
+                            onEnabledChange = { checked ->
+                                if (rule.isModule) {
+                                    dbm.speechRuleDao.update(rule.copy(isEnabled = checked))
+                                } else {
+                                    enableSpeechRuleProject(group)
+                                }
+                            },
+                            onClick = {
+                            },
+                            onRenameModule = {
+                                            renameModuleRule = rule
+                                        },
+                                        onMoveUp = if (rule.isModule) {
+                                  {
+                                      moveSpeechRuleModule(
+                                          projectId = rule.projectId,
+                                          movedRuleId = rule.id,
+                                          direction = -1
+                                      )
+                                  }
+                              } else null,
+                              onMoveDown = if (rule.isModule) {
+                                  {
+                                      moveSpeechRuleModule(
+                                          projectId = rule.projectId,
+                                          movedRuleId = rule.id,
+                                          direction = 1
+                                      )
+                                  }
+                              } else null,
+                              onEmotionModelSettings = if (rule.isModule) {
+                                  {
+                                      moduleApiFileNameState = moduleApiFileName(rule.id)
+                                      emotionApiText = readModuleApiText(context, moduleApiFileNameState)
+                                      showEmotionApiDialog = true
+                                  }
+                              } else null,
+                              onEdit = {
+                                sharedVM.put(NavRoutes.SpeechRuleEdit.KEY_DATA, rule)
+                                navController.navigate(NavRoutes.SpeechRuleEdit.id)
+                            },
+                            onExport = {
+                                showExportSheet = listOf(rule)
+                            },
+                            onDelete = {
+                                showDeleteDialog = rule
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+
+private fun moduleApiFileName(ruleId: Long): String {
+    return "module_api_${ruleId}.txt"
+}
+
+private fun moduleApiFiles(context: Context, fileName: String): List<File> {
+    val safeName = fileName.ifBlank { "module_api_unknown.txt" }
+
+    val list = mutableListOf<File>()
+    list += File(File(context.filesDir, "role_manager_shared"), safeName)
+
+    context.getExternalFilesDir(null)?.let { dir ->
+        list += File(File(dir, "role_manager_shared"), safeName)
+    }
+
+    return list.distinctBy { it.absolutePath }
+}
+
+private fun readModuleApiText(context: Context, fileName: String): String {
+    return moduleApiFiles(context, fileName)
+        .firstOrNull { it.exists() && it.isFile }
+        ?.readText()
+        ?.trim()
+        .orEmpty()
+}
+
+private fun writeModuleApiText(context: Context, fileName: String, text: String) {
+    val value = text.trim()
+
+    moduleApiFiles(context, fileName).forEach { file ->
+        runCatching {
+            file.parentFile?.mkdirs()
+            file.writeText(value)
+        }
+    }
+}
+
+
+
+
+private fun projectModeOf(group: SpeechRuleProjectUiGroup): String {
+    return group.rules.firstOrNull()?.projectMode?.ifBlank { "full_rule" } ?: "full_rule"
+}
+
+private fun isFullRuleProject(group: SpeechRuleProjectUiGroup): Boolean {
+    return projectModeOf(group) != "pipeline"
+}
+
+private fun normalizeModuleStage(stage: String): String {
+    return if (stage.trim().lowercase() == "post") "post" else "pre"
+}
+
+private fun escapeJsString(value: String): String {
+    return value
+        .replace("\\", "\\\\")
+        .replace("\"", "\\\"")
+        .replace("\n", "\\n")
+        .replace("\r", "")
+}
+
+private fun newEmptyModuleCode(moduleName: String, stage: String): String {
+    val safeStage = normalizeModuleStage(stage)
+    val safeName = escapeJsString(moduleName.ifBlank { "新模块" })
+
+    return """
+var SpeechRuleJS = {
+    name: "$safeName",
+    id: "custom_module_" + Date.now(),
+    author: "",
+    version: 1,
+    moduleStage: "$safeStage",
+
+    tags: {
+        narration: "旁白"
+    },
+
+    processCtx: function(ctxJson) {
+        console.log("$safeName：processCtx 已执行");
+        return ctxJson;
+    },
+
+    processText: function(text) {
+        console.log("$safeName：processText 已执行");
+        return String(text || "");
+    },
+
+    handleText: function(text) {
+        return [
+            {
+                text: String(text || ""),
+                tag: "narration"
+            }
+        ];
+    }
+};
+""".trimIndent()
+}
+
+private fun ensureModuleStageInCode(code: String, stage: String, fallbackName: String): String {
+    val safeStage = normalizeModuleStage(stage)
+    val text = code.trim()
+
+    if (text.isBlank()) {
+        return newEmptyModuleCode(fallbackName, safeStage)
+    }
+
+    val stageRegex = Regex("""moduleStage\s*:\s*["'](?:pre|post)["']""")
+    if (stageRegex.containsMatchIn(text)) {
+        return stageRegex.replace(text, """moduleStage: "$safeStage"""")
+    }
+
+    val objectRegex = Regex("""(var\s+SpeechRuleJS\s*=\s*\{)""")
+    if (objectRegex.containsMatchIn(text)) {
+        return objectRegex.replaceFirst(text, "$1\n    moduleStage: \"$safeStage\",")
+    }
+
+    val letObjectRegex = Regex("""(let\s+SpeechRuleJS\s*=\s*\{)""")
+    if (letObjectRegex.containsMatchIn(text)) {
+        return letObjectRegex.replaceFirst(text, "$1\n    moduleStage: \"$safeStage\",")
+    }
+
+    return text
+}
+
+
+private fun speechRuleUiIsPostModule(rule: SpeechRule): Boolean {
+    if (!rule.isModule) return false
+
+    val type = rule.moduleType.trim().lowercase()
+    if (
+        type == "post" ||
+        type == "after" ||
+        type == "after_rule" ||
+        type == "postprocess" ||
+        type == "post_processor" ||
+        type == "emotion_post"
+    ) {
+        return true
+    }
+
+    val code = rule.code
+    return code.contains("moduleStage: \"post\"") ||
+        code.contains("moduleStage:'post'") ||
+        code.contains("stage: \"post\"") ||
+        code.contains("stage:'post'") ||
+        code.contains("POST_MODULE")
+}
+
+private fun speechRuleUiStageOrder(rule: SpeechRule): Int {
+    return when {
+        rule.isModule && !speechRuleUiIsPostModule(rule) -> 0
+        !rule.isModule -> 1
+        rule.isModule && speechRuleUiIsPostModule(rule) -> 2
+        else -> 3
+    }
+}
+
+private fun speechRuleUiStageLabel(rule: SpeechRule): String {
+    return if (speechRuleUiIsPostModule(rule)) {
+        "后置模块"
+    } else {
+        "前置模块"
+    }
+}
+
+
+private fun moveSpeechRuleModule(
+    projectId: String,
+    movedRuleId: Long,
+    direction: Int,
+) {
+    if (projectId.isBlank()) return
+
+    val modules = dbm.speechRuleDao.all
+        .filter { it.projectId == projectId && it.isModule }
+        .sortedWith(
+            compareBy<SpeechRule> { it.moduleOrder }
+                .thenBy { it.order }
+                .thenBy { it.id }
+        )
+        .toMutableList()
+
+    val index = modules.indexOfFirst { it.id == movedRuleId }
+    if (index < 0) return
+
+    val targetIndex = index + direction
+    if (targetIndex < 0 || targetIndex >= modules.size) return
+
+    val current = modules[index]
+    modules[index] = modules[targetIndex]
+    modules[targetIndex] = current
+
+    val updated = modules.mapIndexed { i, rule ->
+        rule.copy(
+            moduleOrder = (i + 1) * 100,
+            order = i
+        )
+    }
+
+    if (updated.isNotEmpty()) {
+        dbm.speechRuleDao.update(*updated.toTypedArray())
+    }
+}
+
+
+private data class SpeechRuleProjectUiGroup(
+    val key: String,
+    val name: String,
+    val rules: List<SpeechRule>,
+)
+
+private fun safeRuleModuleIdPart(text: String): String {
+    return text
+        .trim()
+        .replace(Regex("[^A-Za-z0-9_.-]+"), "_")
+        .replace(Regex("_+"), "_")
+        .trim('_')
+}
+
+private fun uniqueSpeechRuleModuleRuleId(baseId: String): String {
+    val safeBase = safeRuleModuleIdPart(baseId).ifBlank { "speech_rule_module" }
+    var candidate = safeBase
+    var index = 2
+
+    while (dbm.speechRuleDao.getByRuleIdAny(candidate) != null) {
+        candidate = "${safeBase}_$index"
+        index++
+    }
+
+    return candidate
+}
+
+private fun SpeechRule.projectGroupName(): String {
+    return projectName
+        .trim()
+        .ifBlank {
+            name.trim().ifBlank {
+                ruleId.trim().ifBlank { "未命名朗读规则" }
+            }
+        }
+}
+
+private fun SpeechRule.projectGroupKey(): String {
+    return projectId
+        .trim()
+        .ifBlank {
+            ruleId.trim().ifBlank { id.toString() }
+        }
+}
+
+private fun SpeechRule.moduleDisplayName(): String {
+    return moduleName
+        .trim()
+        .ifBlank {
+            if (isModule) {
+                name.trim().ifBlank { "未命名模块" }
+            } else {
+                "完整朗读规则"
+            }
+        }
+}
+
+private fun List<SpeechRule>.toProjectGroups(): List<SpeechRuleProjectUiGroup> {
+    return groupBy { it.projectGroupKey() }
+        .map { (projectKey, rules) ->
+            val sortedRules = rules.sortedWith(
+                compareBy<SpeechRule> { it.moduleOrder }
+                    .thenBy { it.order }
+            )
+
+            val firstRule = sortedRules.first()
+
+            SpeechRuleProjectUiGroup(
+                key = projectKey,
+                name = firstRule.projectGroupName(),
+                rules = sortedRules
+            )
+        }
+        .sortedBy { group ->
+            group.rules.minOfOrNull { it.order } ?: Int.MAX_VALUE
+        }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun Item(
+    modifier: Modifier,
+    name: String,
+    desc: String,
+    isEnabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+    onClick: () -> Unit,
+    onRenameModule: () -> Unit,
+    onMoveUp: (() -> Unit)? = null,
+    onMoveDown: (() -> Unit)? = null,
+    onEmotionModelSettings: (() -> Unit)? = null,
+    onEdit: () -> Unit,
+    onExport: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    val context = LocalContext.current
+    ElevatedCard(modifier = modifier, onClick = onClick) {
+        Box(modifier = Modifier.padding(4.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(
+                    checked = isEnabled,
+                    onCheckedChange = onEnabledChange,
+                    modifier = Modifier.semantics {
+                        role = Role.Switch
+                        context
+                            .getString(
+                                if (isEnabled) R.string.rule_enabled_desc else R.string.rule_disabled_desc,
+                                name
+                            )
+                            .let {
+                                contentDescription = it
+                                stateDescription = it
+                            }
+                    }
+                )
+                Column(Modifier.weight(1f)) {
+                    Text(text = name, style = MaterialTheme.typography.titleMedium)
+                    Text(text = desc, style = MaterialTheme.typography.bodyMedium)
+                }
+                Row {
+                    if (name.startsWith("🧩")) {
+
+                        IconButton(onClick = onRenameModule) {
+
+                            Text("✏️")
+
+                        }
+
+                    }
+
+
+                    IconButton(onClick = onEdit) {
+                        Icon(Icons.Default.Edit, stringResource(id = R.string.edit_desc, name))
+                    }
+
+                    var showOptions by remember { mutableStateOf(false) }
+                    IconButton(onClick = { showOptions = true }) {
+                        Icon(
+                            Icons.Default.MoreVert,
+                            stringResource(id = R.string.more_options_desc, name)
+                        )
+                        DropdownMenu(
+                            expanded = showOptions,
+                            onDismissRequest = {
+showOptions = false }) {
+                              if (onEmotionModelSettings != null) {
+                                  DropdownMenuItem(
+                                      text = { Text("模型设置") },
+                                      onClick = {
+                                          showOptions = false
+                                          onEmotionModelSettings()
+                                      },
+                                      leadingIcon = {
+                                          Text("🧠")
+                                      }
+                                  )
+                              }
+
+                              if (onMoveUp != null) {
+                                  DropdownMenuItem(
+                                      text = { Text("上移") },
+                                      onClick = {
+                                          showOptions = false
+                                          onMoveUp()
+                                      },
+                                      leadingIcon = {
+                                          Text("⬆️")
+                                      }
+                                  )
+                              }
+
+                              if (onMoveDown != null) {
+                                  DropdownMenuItem(
+                                      text = { Text("下移") },
+                                      onClick = {
+                                          showOptions = false
+                                          onMoveDown()
+                                      },
+                                      leadingIcon = {
+                                          Text("⬇️")
+                                      }
+                                  )
+                              }
+
+
+
+
+                            DropdownMenuItem(
+                                text = { Text(stringResource(id = R.string.export_config)) },
+                                onClick = {
+                                    showOptions = false
+                                    onExport()
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Output, null)
+                                }
+                            )
+
+                            HorizontalDivider()
+
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        stringResource(id = R.string.delete),
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                },
+                                onClick = {
+                                    showOptions = false
+                                    onDelete()
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.DeleteForever,
+                                        null,
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                }
+                            )
+                        }
+                    }
+
+                }
+            }
+
+
+        }
+    }
+}

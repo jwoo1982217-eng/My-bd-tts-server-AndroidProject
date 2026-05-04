@@ -1,0 +1,185 @@
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.10.2/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+
+> Configure project :app
+WARNING: The option setting 'android.aapt2FromMavenOverride=/data/data/com.termux/files/usr/bin/aapt2' is experimental.
+
+> Task :build-logic:convention:checkKotlinGradlePluginConfigurationErrors
+> Task :build-logic:convention:compileKotlin UP-TO-DATE
+> Task :build-logic:convention:compileJava NO-SOURCE
+> Task :build-logic:convention:pluginDescriptors UP-TO-DATE
+> Task :build-logic:convention:processResources UP-TO-DATE
+> Task :build-logic:convention:classes UP-TO-DATE
+> Task :build-logic:convention:jar UP-TO-DATE
+> Task :lib-common:preBuild UP-TO-DATE
+> Task :lib-server:preBuild UP-TO-DATE
+> Task :lib-compose:preBuild UP-TO-DATE
+> Task :lib-tts:preBuild UP-TO-DATE
+> Task :lib-common:preDebugBuild UP-TO-DATE
+> Task :lib-database:preBuild UP-TO-DATE
+> Task :lib-compose:preDebugBuild UP-TO-DATE
+> Task :lib-script:preBuild UP-TO-DATE
+> Task :app:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :lib-database:preDebugBuild UP-TO-DATE
+> Task :lib-server:preDebugBuild UP-TO-DATE
+> Task :app:buildTranslationArray UP-TO-DATE
+> Task :lib-tts:preDebugBuild UP-TO-DATE
+> Task :lib-script:preDebugBuild UP-TO-DATE
+> Task :app:preBuild UP-TO-DATE
+> Task :app:preAppDebugBuild UP-TO-DATE
+> Task :lib-common:generateDebugResValues UP-TO-DATE
+> Task :lib-compose:generateDebugResValues UP-TO-DATE
+> Task :lib-script:generateDebugResValues UP-TO-DATE
+> Task :lib-database:generateDebugResValues UP-TO-DATE
+> Task :lib-server:generateDebugResValues UP-TO-DATE
+> Task :lib-tts:generateDebugResValues UP-TO-DATE
+> Task :lib-database:generateDebugResources UP-TO-DATE
+> Task :lib-compose:generateDebugResources UP-TO-DATE
+> Task :lib-common:generateDebugResources UP-TO-DATE
+> Task :lib-tts:generateDebugResources UP-TO-DATE
+> Task :lib-server:generateDebugResources UP-TO-DATE
+> Task :lib-script:generateDebugResources UP-TO-DATE
+> Task :lib-script:packageDebugResources UP-TO-DATE
+> Task :lib-common:packageDebugResources UP-TO-DATE
+> Task :lib-database:packageDebugResources UP-TO-DATE
+> Task :lib-server:packageDebugResources UP-TO-DATE
+> Task :lib-tts:packageDebugResources UP-TO-DATE
+> Task :lib-compose:packageDebugResources UP-TO-DATE
+> Task :lib-tts:parseDebugLocalResources UP-TO-DATE
+> Task :lib-server:parseDebugLocalResources UP-TO-DATE
+> Task :lib-database:parseDebugLocalResources UP-TO-DATE
+> Task :lib-script:parseDebugLocalResources UP-TO-DATE
+> Task :lib-common:parseDebugLocalResources UP-TO-DATE
+> Task :lib-compose:parseDebugLocalResources UP-TO-DATE
+> Task :lib-tts:generateDebugRFile UP-TO-DATE
+> Task :lib-database:generateDebugRFile UP-TO-DATE
+> Task :lib-server:generateDebugRFile UP-TO-DATE
+> Task :lib-compose:generateDebugRFile UP-TO-DATE
+> Task :lib-script:generateDebugRFile UP-TO-DATE
+> Task :lib-common:generateDebugRFile UP-TO-DATE
+> Task :lib-compose:writeDebugAarMetadata UP-TO-DATE
+> Task :lib-database:writeDebugAarMetadata UP-TO-DATE
+> Task :lib-server:writeDebugAarMetadata UP-TO-DATE
+> Task :lib-common:writeDebugAarMetadata UP-TO-DATE
+> Task :lib-compose:extractDeepLinksDebug UP-TO-DATE
+> Task :lib-server:extractDeepLinksDebug UP-TO-DATE
+> Task :lib-common:extractDeepLinksDebug UP-TO-DATE
+> Task :lib-database:extractDeepLinksDebug UP-TO-DATE
+> Task :lib-compose:processDebugManifest UP-TO-DATE
+> Task :lib-database:processDebugManifest UP-TO-DATE
+> Task :lib-common:processDebugManifest UP-TO-DATE
+> Task :lib-server:processDebugManifest UP-TO-DATE
+> Task :lib-script:writeDebugAarMetadata UP-TO-DATE
+> Task :lib-tts:writeDebugAarMetadata UP-TO-DATE
+> Task :lib-compose:compileDebugLibraryResources UP-TO-DATE
+> Task :lib-server:compileDebugLibraryResources UP-TO-DATE
+> Task :lib-common:compileDebugLibraryResources UP-TO-DATE
+> Task :lib-compose:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :lib-server:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :lib-common:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :lib-script:extractDeepLinksDebug UP-TO-DATE
+> Task :lib-tts:extractDeepLinksDebug UP-TO-DATE
+> Task :lib-database:compileDebugLibraryResources UP-TO-DATE
+> Task :lib-compose:javaPreCompileDebug UP-TO-DATE
+> Task :lib-server:javaPreCompileDebug UP-TO-DATE
+> Task :lib-database:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :lib-script:processDebugManifest UP-TO-DATE
+> Task :lib-script:compileDebugLibraryResources UP-TO-DATE
+> Task :lib-script:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :lib-script:javaPreCompileDebug UP-TO-DATE
+> Task :lib-tts:processDebugManifest UP-TO-DATE
+> Task :lib-tts:compileDebugLibraryResources UP-TO-DATE
+> Task :lib-tts:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :lib-tts:javaPreCompileDebug UP-TO-DATE
+> Task :lib-database:kspDebugKotlin UP-TO-DATE
+> Task :lib-common:compileDebugKotlin UP-TO-DATE
+> Task :lib-common:javaPreCompileDebug UP-TO-DATE
+> Task :lib-common:compileDebugJavaWithJavac UP-TO-DATE
+> Task :lib-common:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :lib-database:compileDebugKotlin UP-TO-DATE
+> Task :lib-database:javaPreCompileDebug UP-TO-DATE
+> Task :lib-database:compileDebugJavaWithJavac UP-TO-DATE
+> Task :lib-database:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :lib-script:compileDebugKotlin UP-TO-DATE
+> Task :lib-script:compileDebugJavaWithJavac NO-SOURCE
+> Task :lib-script:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :lib-server:compileDebugKotlin UP-TO-DATE
+> Task :lib-server:compileDebugJavaWithJavac NO-SOURCE
+> Task :lib-server:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :app:dataBindingMergeDependencyArtifactsAppDebug UP-TO-DATE
+> Task :app:generateAppDebugResValues UP-TO-DATE
+> Task :app:generateAppDebugResources UP-TO-DATE
+> Task :app:collectDependencies UP-TO-DATE
+> Task :app:prepareLibraryDefinitionsAppDebug UP-TO-DATE
+> Task :lib-compose:compileDebugKotlin UP-TO-DATE
+> Task :lib-compose:compileDebugJavaWithJavac NO-SOURCE
+> Task :lib-compose:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :app:mergeAppDebugResources UP-TO-DATE
+> Task :app:packageAppDebugResources UP-TO-DATE
+> Task :app:parseAppDebugLocalResources UP-TO-DATE
+> Task :lib-tts:compileDebugKotlin UP-TO-DATE
+> Task :lib-tts:compileDebugJavaWithJavac NO-SOURCE
+> Task :lib-tts:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :app:dataBindingGenBaseClassesAppDebug UP-TO-DATE
+> Task :app:generateAppDebugBuildConfig
+> Task :app:checkAppDebugAarMetadata UP-TO-DATE
+> Task :app:mapAppDebugSourceSetPaths UP-TO-DATE
+> Task :app:createAppDebugCompatibleScreenManifests
+> Task :app:extractDeepLinksAppDebug UP-TO-DATE
+> Task :app:processAppDebugMainManifest
+> Task :app:processAppDebugManifest
+> Task :app:processAppDebugManifestForPackage
+> Task :app:processAppDebugResources
+> Task :app:kspAppDebugKotlin
+
+> Task :app:compileAppDebugKotlin FAILED
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/forwarder/BasicForwarderScreen.kt:12:35 Unresolved reference 'ExperimentalMaterial3ExpressiveApi'.
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/forwarder/BasicForwarderScreen.kt:38:5 Unresolved reference 'ExperimentalMaterial3ExpressiveApi'.
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/forwarder/BasicForwarderScreen.kt:38:5 Annotation argument must be a compile-time constant.
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:16:35 Unresolved reference 'ExperimentalMaterial3ExpressiveApi'.
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:17:35 Unresolved reference 'FloatingActionButtonMenu'.
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:20:35 Unresolved reference 'ToggleFloatingActionButton'.
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:21:35 Unresolved reference 'ToggleFloatingActionButtonDefaults'.
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:22:35 Unresolved reference 'animateFloatingActionButton'.
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:45:8 Unresolved reference 'ExperimentalMaterial3ExpressiveApi'.
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:45:8 Annotation argument must be a compile-time constant.
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:59:5 Unresolved reference 'FloatingActionButtonMenu'.
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:63:13 Unresolved reference 'ToggleFloatingActionButton'.
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:75:22 Unresolved reference 'animateFloatingActionButton'.
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:83:36 @Composable invocations can only happen from the context of a @Composable function
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:85:29 Unresolved reference 'checkedProgress'.
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:88:17 @Composable invocations can only happen from the context of a @Composable function
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:89:31 @Composable invocations can only happen from the context of a @Composable function
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:91:41 Unresolved reference 'animateIcon'.
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:91:55 Unresolved reference 'checkedProgress'.
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:96:9 @Composable invocations can only happen from the context of a @Composable function
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:104:9 @Composable invocations can only happen from the context of a @Composable function
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:105:9 @Composable invocations can only happen from the context of a @Composable function
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:113:9 @Composable invocations can only happen from the context of a @Composable function
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:114:9 @Composable invocations can only happen from the context of a @Composable function
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:122:9 @Composable invocations can only happen from the context of a @Composable function
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:123:9 @Composable invocations can only happen from the context of a @Composable function
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:144:14 Unresolved reference 'fillMaxWidth'.
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:149:17 Unresolved reference 'MaterialTheme'.
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:151:9 Unresolved reference 'Row'.
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:152:33 Unresolved reference 'padding'.
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:155:13 @Composable invocations can only happen from the context of a @Composable function
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:156:13 @Composable invocations can only happen from the context of a @Composable function
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:156:40 Unresolved reference 'width'.
+e: file:///storage/emulated/0/TTSvoices/My-bd-tts-server-AndroidProject-main(1)/app/src/main/java/com/github/jing332/tts_server_android/compose/systts/list/FloatingAddConfigButtonGroup.kt:157:13 @Composable invocations can only happen from the context of a @Composable function
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':app:compileAppDebugKotlin'.
+> A failure occurred while executing org.jetbrains.kotlin.compilerRunner.GradleCompilerRunnerWithWorkers$GradleKotlinCompilerWorkAction
+   > Compilation error. See log for more details
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 43s
+100 actionable tasks: 9 executed, 91 up-to-date
