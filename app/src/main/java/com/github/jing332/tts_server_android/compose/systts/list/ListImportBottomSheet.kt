@@ -58,10 +58,105 @@ private fun SystemTtsV2.applyPluginRedirect(
     )
 }
 
+
+private fun importSelectedSystemTtsKeepTree(
+    selectedPairs: List<Pair<SystemTtsGroup, SystemTtsV2>>,
+    allGroups: List<GroupWithSystemTts>,
+    pluginRedirectMap: Map<String, String>,
+): Int {
+    if (selectedPairs.isEmpty()) return 0
+
+    val groupEntryMap = linkedMapOf<Long, GroupWithSystemTts>()
+    allGroups.forEach { item ->
+        groupEntryMap[item.group.id] = item
+    }
+
+    val selectedGroupIds = selectedPairs
+        .map { it.first.id }
+        .toMutableSet()
+
+    fun addParentGroups(oldGroupId: Long) {
+        val group = groupEntryMap[oldGroupId]?.group ?: return
+        val parentId = group.parentGroupId
+
+        if (parentId != 0L && groupEntryMap.containsKey(parentId)) {
+            selectedGroupIds.add(parentId)
+            addParentGroups(parentId)
+        }
+    }
+
+    selectedGroupIds.toList().forEach { oldGroupId ->
+        addParentGroups(oldGroupId)
+    }
+
+    val oldToNewGroupId = mutableMapOf<Long, Long>()
+    var groupIdSeed = System.currentTimeMillis()
+
+    selectedGroupIds.forEach { oldGroupId ->
+        oldToNewGroupId[oldGroupId] = groupIdSeed++
+    }
+
+    val insertedGroupIds = mutableSetOf<Long>()
+
+    fun insertGroupRecursive(oldGroupId: Long) {
+        if (insertedGroupIds.contains(oldGroupId)) return
+
+        val entry = groupEntryMap[oldGroupId] ?: return
+        val oldGroup = entry.group
+        val oldParentId = oldGroup.parentGroupId
+
+        val newParentId = if (
+            oldParentId != 0L &&
+            selectedGroupIds.contains(oldParentId) &&
+            groupEntryMap.containsKey(oldParentId)
+        ) {
+            insertGroupRecursive(oldParentId)
+            oldToNewGroupId[oldParentId] ?: 0L
+        } else {
+            0L
+        }
+
+        val newGroupId = oldToNewGroupId[oldGroupId] ?: return
+
+        dbm.systemTtsV2.insertGroup(
+            oldGroup.copy(
+                id = newGroupId,
+                parentGroupId = newParentId
+            )
+        )
+
+        insertedGroupIds.add(oldGroupId)
+    }
+
+    selectedGroupIds.forEach { oldGroupId ->
+        insertGroupRecursive(oldGroupId)
+    }
+
+    var ttsIdSeed = System.currentTimeMillis() + 100000L
+
+    val newTtsList = selectedPairs.map { pair ->
+        val oldGroup = pair.first
+        val tts = pair.second.applyPluginRedirect(pluginRedirectMap)
+        val newGroupId = oldToNewGroupId[oldGroup.id] ?: 0L
+
+        tts.copy(
+            id = ttsIdSeed++,
+            groupId = newGroupId
+        )
+    }
+
+    if (newTtsList.isNotEmpty()) {
+        dbm.systemTtsV2.insert(*newTtsList.toTypedArray())
+    }
+
+    return newTtsList.size
+}
+
 @Composable
 fun ListImportBottomSheet(onDismissRequest: () -> Unit) {
     val context = LocalContext.current
     var selectDialog by remember { mutableStateOf<List<ConfigModel>?>(null) }
+    var importedGroupList by remember { mutableStateOf<List<GroupWithSystemTts>>(emptyList()) }
 
     if (selectDialog != null) {
         SelectImportConfigDialog(
@@ -72,19 +167,16 @@ fun ListImportBottomSheet(onDismissRequest: () -> Unit) {
             onSelectedList = { list ->
                 val pluginRedirectMap = readPluginRedirectMap(context)
 
-                list.map {
+                val selectedPairs = list.map {
                     @Suppress("UNCHECKED_CAST")
                     it as Pair<SystemTtsGroup, SystemTtsV2>
                 }
-                    .forEach {
-                        val group = it.first
-                        val tts = it.second.applyPluginRedirect(pluginRedirectMap)
 
-                        dbm.systemTtsV2.insertGroup(group)
-                        dbm.systemTtsV2.insert(tts)
-                    }
-
-                list.size
+                importSelectedSystemTtsKeepTree(
+                    selectedPairs = selectedPairs,
+                    allGroups = importedGroupList,
+                    pluginRedirectMap = pluginRedirectMap
+                )
             }
         )
     }
@@ -94,7 +186,10 @@ fun ListImportBottomSheet(onDismissRequest: () -> Unit) {
         onImport = { json ->
             val allList = mutableListOf<ConfigModel>()
 
-            getImportList(json, false)?.forEach { groupWithTts ->
+            val importList = getImportList(json, false).orEmpty()
+            importedGroupList = importList
+
+            importList.forEach { groupWithTts ->
                 val group = groupWithTts.group
 
                 groupWithTts.list.forEach { sysTts ->

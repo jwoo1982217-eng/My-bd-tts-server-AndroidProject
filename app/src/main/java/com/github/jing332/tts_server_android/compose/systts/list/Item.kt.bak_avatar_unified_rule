@@ -505,75 +505,55 @@ private fun selectAvatarSource(
     avatarUrl: String?,
     fallback: Int
 ): Any {
-    val icon = avatarUrl.orEmpty().trim()
+    val source = oneLine("$name $tagName $type")
 
-    // 1. 配置/插件已经保存了具体头像，则优先使用
-    if (
-        icon.startsWith("http://") ||
-        icon.startsWith("https://") ||
-        icon.startsWith("file://") ||
-        icon.startsWith("content://") ||
-        icon.startsWith("android.resource://") ||
-        icon.startsWith("data:image") ||
-        icon.startsWith("/")
-    ) {
-        return icon
+    fun choose(resName: String): Any? {
+        val id = context.resources.getIdentifier(
+            resName,
+            "drawable",
+            context.packageName
+        )
+        return if (id != 0) id else null
     }
 
-    // 2. 没有插件头像，再按本地男女老幼/旁白/音效规则匹配
-    val source = oneLine("$name $tagName $type").lowercase()
-
-    val resName = when {
+    val matched = when {
         source.contains("在线音效") ||
             source.contains("网络音效") ||
             source.contains("online", ignoreCase = true) -> {
-            "tts_avatar_online_effect"
+            choose("tts_avatar_online_effect")
         }
 
         source.contains("本地音效") ||
             source.contains("本地") ||
             source.contains("local", ignoreCase = true) -> {
-            "tts_avatar_local_effect"
+            choose("tts_avatar_local_effect")
         }
 
         source.contains("旁白") ||
             source.contains("narration", ignoreCase = true) ||
-            source.contains("narrator", ignoreCase = true) ||
-            source.contains("解说") ||
-            source.contains("讲述") -> {
-            "tts_avatar_narration"
+            source.contains("narrator", ignoreCase = true) -> {
+            choose("tts_avatar_narration")
         }
 
-        source.contains("女童") -> "tts_avatar_female_child"
-        source.contains("男童") -> "tts_avatar_male_child"
+        source.contains("女童") -> choose("tts_avatar_female_child")
+        source.contains("男童") -> choose("tts_avatar_male_child")
 
-        source.contains("少女") -> "tts_avatar_teen_girl"
-        source.contains("少年") -> "tts_avatar_teen_boy"
+        source.contains("女青年") || source.contains("女青") -> choose("tts_avatar_female_young")
+        source.contains("男青年") || source.contains("男青") -> choose("tts_avatar_male_young")
 
-        source.contains("女青年") || source.contains("女青") -> "tts_avatar_female_young"
-        source.contains("男青年") || source.contains("男青") -> "tts_avatar_male_young"
+        source.contains("女中年") || source.contains("女中") -> choose("tts_avatar_female_middle")
+        source.contains("男中年") || source.contains("男中") -> choose("tts_avatar_male_middle")
 
-        source.contains("女中年") || source.contains("女中") -> "tts_avatar_female_middle"
-        source.contains("男中年") || source.contains("男中") -> "tts_avatar_male_middle"
+        source.contains("女老年") || source.contains("女老") -> choose("tts_avatar_female_old")
+        source.contains("男老年") || source.contains("男老") -> choose("tts_avatar_male_old")
 
-        source.contains("女老年") || source.contains("女老") -> "tts_avatar_female_old"
-        source.contains("男老年") || source.contains("男老") -> "tts_avatar_male_old"
-
-        source.contains("女") || source.contains("female", ignoreCase = true) -> "tts_avatar_female_young"
-        source.contains("男") || source.contains("male", ignoreCase = true) -> "tts_avatar_male_young"
+        source.contains("少女") -> choose("tts_avatar_teen_girl")
+        source.contains("少年") -> choose("tts_avatar_teen_boy")
 
         else -> null
     }
 
-    if (resName != null) {
-        val resId = context.resources.getIdentifier(
-            resName,
-            "drawable",
-            context.packageName
-        )
-
-        if (resId != 0) return resId
-    }
-
-    return fallback
+    return matched
+        ?: avatarUrl?.takeIf { it.isNotBlank() }
+        ?: fallback
 }

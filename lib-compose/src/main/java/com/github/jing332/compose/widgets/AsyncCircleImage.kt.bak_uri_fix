@@ -2,7 +2,6 @@ package com.github.jing332.compose.widgets
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.net.Uri
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
@@ -13,7 +12,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
-import java.io.File
 
 data class InterceptorResult(val model: Any?, val contentDescription: Any?)
 
@@ -30,12 +28,14 @@ object AsyncCircleImageSettings {
         }
     }
 
+
     var interceptor: ModelInterceptor = defaultInterceptor
 }
 
 fun interface ModelInterceptor {
     fun apply(context: Context, model: Any?, contentDescription: String?): InterceptorResult
 }
+
 
 @Composable
 fun AsyncCircleImage(
@@ -45,10 +45,7 @@ fun AsyncCircleImage(
     @SuppressLint("ModifierParameter") modifier: Modifier = Modifier.size(32.dp),
 ) {
     val context = LocalContext.current
-    val result = remember(model) {
-        interceptor?.apply(context, model, contentDescription)
-    }
-
+    val result = remember(model) { interceptor?.apply(context, model, contentDescription) }
     val desc: String? = remember(result) {
         val desc = result?.contentDescription
         return@remember try {
@@ -62,58 +59,11 @@ fun AsyncCircleImage(
         }
     }
 
-    val imageModel = remember(context, result?.model) {
-        normalizeImageModel(context, result?.model)
-    }
-
     AsyncImage(
-        model = imageModel,
-        contentDescription = desc,
-        modifier = modifier.clip(CircleShape),
+        result?.model,
+        desc,
+        modifier = modifier
+            .clip(CircleShape),
         contentScale = ContentScale.Crop
     )
-}
-
-private fun normalizeImageModel(context: Context, model: Any?): Any? {
-    return when (model) {
-        is String -> normalizeStringImageModel(context, model)
-        else -> model
-    }
-}
-
-private fun normalizeStringImageModel(context: Context, value: String): Any? {
-    val text = value.trim()
-    if (text.isBlank()) return null
-
-    if (text.startsWith("android.resource://")) {
-        val uri = Uri.parse(text)
-        val segments = uri.pathSegments
-
-        val type = segments.getOrNull(segments.size - 2) ?: "drawable"
-        val name = segments.lastOrNull()
-
-        if (!name.isNullOrBlank()) {
-            val pkg = uri.host ?: context.packageName
-            val resId = context.resources.getIdentifier(name, type, pkg)
-
-            if (resId != 0) {
-                return resId
-            }
-        }
-
-        return uri
-    }
-
-    if (
-        text.startsWith("content://") ||
-        text.startsWith("file://")
-    ) {
-        return Uri.parse(text)
-    }
-
-    if (text.startsWith("/")) {
-        return File(text)
-    }
-
-    return text
 }

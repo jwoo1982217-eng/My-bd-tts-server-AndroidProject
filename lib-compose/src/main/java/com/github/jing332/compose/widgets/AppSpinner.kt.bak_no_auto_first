@@ -52,7 +52,6 @@ private fun TextFieldSelectionDialog(
     entries: List<String>,
     icons: List<Any?> = emptyList(),
     enabled: Boolean = true,
-    autoSelectFirstWhenValueMissing: Boolean = true,
 
     onSelectedChange: (key: Any, value: String) -> Unit,
     onValueSame: (current: Any, new: Any) -> Boolean = { current, new -> current == new },
@@ -61,10 +60,8 @@ private fun TextFieldSelectionDialog(
     var expanded by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(values, entries) {
-        if (autoSelectFirstWhenValueMissing) {
-            values.getOrNull(entries.indexOf(selectedText))?.let {
-                onSelectedChange.invoke(it, selectedText)
-            }
+        values.getOrNull(entries.indexOf(selectedText))?.let {
+            onSelectedChange.invoke(it, selectedText)
         }
     }
     if (expanded) {
@@ -148,12 +145,11 @@ fun AppSpinner(
     icons: List<Any?> = emptyList(),
     maxDropDownCount: Int = ComposeWidgetSettings.maxDropDownCount,
     enabled: Boolean = true,
-    autoSelectFirstWhenValueMissing: Boolean = true,
 
     onValueSame: (current: Any, new: Any) -> Boolean = { current, new -> current == new },
     onSelectedChange: (key: Any, value: String) -> Unit,
 ) {
-    if (autoSelectFirstWhenValueMissing && values.isNotEmpty() && !values.contains(value)) {
+    if (values.isNotEmpty() && !values.contains(value)) {
         onSelectedChange.invoke(values[0], entries[0])
     }
 
@@ -181,7 +177,6 @@ fun AppSpinner(
             entries = entries,
             icons = icons,
             enabled = enabled,
-            autoSelectFirstWhenValueMissing = autoSelectFirstWhenValueMissing,
             onValueSame = onValueSame,
             onSelectedChange = onSelectedChange,
         )

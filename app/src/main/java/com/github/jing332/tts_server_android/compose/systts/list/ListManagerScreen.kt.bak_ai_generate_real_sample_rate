@@ -1,7 +1,6 @@
 package com.github.jing332.tts_server_android.compose.systts.list
 // 第一段：Android / Compose import
 import com.github.jing332.tts_server_android.compose.systts.list.avatar.resolvePluginAvatarUrl
-import com.github.jing332.tts_server_android.compose.systts.list.avatar.resolveVoiceAvatarUri
 import com.github.jing332.tts_server_android.compose.systts.list.avatar.resolveLocalAvatarRes
 import android.content.Context
 import android.content.Intent
@@ -737,7 +736,6 @@ private fun parseAiRuleRoleTags(rule: SpeechRule): List<AiRuleRoleTag> {
 private data class AiPluginVoicePreview(
     val voiceId: String,
     val voiceName: String,
-    val icon: String? = null
 )
 
 private fun extractAiPluginVoicePreview(pluginCode: String): List<AiPluginVoicePreview> {
@@ -885,8 +883,7 @@ private fun fetchAiPluginVoicesDynamic(
         .map {
             AiPluginVoicePreview(
                 voiceId = it.id,
-                voiceName = it.name,
-                icon = readVoiceIconByReflection(it)
+                voiceName = it.name
             )
         }
         .distinctBy { it.voiceId }
@@ -1389,14 +1386,8 @@ private fun generateAiConfigListFromPreview(
         )
     }.toMap()
 
-    val fallbackAiSampleRate = resolvePluginSampleRate(plugin)
-    val fallbackAiNeedDecode = resolvePluginNeedDecode(plugin)
-
-    val aiPluginEngine = runCatching {
-        TtsPluginUiEngineV2(context, plugin).apply {
-            eval()
-        }
-    }.getOrNull()
+    val sampleRate = resolvePluginSampleRate(plugin)
+    val needDecode = resolvePluginNeedDecode(plugin)
 
     var created = 0
     val now = System.currentTimeMillis()
@@ -1414,35 +1405,6 @@ private fun generateAiConfigListFromPreview(
         // 配置列表显示真实声音名；朗读规则标签仍保存在 speechRule.tagName 里
         val display = voice.voiceName
 
-        val aiLocale = if (plugin.pluginId.startsWith("maoxiang.tts.gj.normalemotion.emobridge")) {
-            "emotion"
-        } else {
-            "zh-CN"
-        }
-        val aiVoiceId = voice.voiceId
-        val aiVoiceIcon = voice.icon
-
-        val aiAvatarUrl = resolveVoiceAvatarUri(
-            packageName = context.packageName,
-            voiceName = display,
-            voiceId = aiVoiceId,
-            pluginIcon = aiVoiceIcon
-        )
-
-        val aiVoiceData = mapOf(
-            "voiceName" to display,
-            "avatarUrl" to aiAvatarUrl,
-            "icon" to aiAvatarUrl
-        )
-
-        val realAiSampleRate = runCatching {
-            aiPluginEngine?.getSampleRate(aiLocale, aiVoiceId)
-        }.getOrNull() ?: fallbackAiSampleRate
-
-        val realAiNeedDecode = runCatching {
-            aiPluginEngine?.isNeedDecode(aiLocale, aiVoiceId)
-        }.getOrNull() ?: fallbackAiNeedDecode
-
         val item = SystemTtsV2(
             id = now + idx,
             displayName = display,
@@ -1456,12 +1418,12 @@ private fun generateAiConfigListFromPreview(
                     tagName = role.tagName
                 ),
                 audioFormat = BasicAudioFormat(
-                    sampleRate = realAiSampleRate,
-                    isNeedDecode = realAiNeedDecode
+                    sampleRate = sampleRate,
+                    isNeedDecode = needDecode
                 ),
                 source = PluginTtsSource(
-                    locale = aiLocale,
-                    voice = aiVoiceId,
+                    locale = "zh-CN",
+                    voice = voice.voiceId,
                     pluginId = plugin.pluginId
                 )
             )
@@ -3038,12 +3000,6 @@ fun getDirectSelectedTtsForBatchMove(): List<SystemTtsV2> {
         val fallbackTargetSampleRate = resolvePluginSampleRate(targetPlugin)
         val fallbackTargetNeedDecode = resolvePluginNeedDecode(targetPlugin)
 
-        val targetLocale = if (newPluginId.startsWith("maoxiang.tts.gj.normalemotion.emobridge")) {
-            "emotion"
-        } else {
-            "zh-CN"
-        }
-
         val targetPluginEngine = runCatching {
             TtsPluginUiEngineV2(context, targetPlugin).apply {
                 eval()
@@ -3067,39 +3023,15 @@ fun getDirectSelectedTtsForBatchMove(): List<SystemTtsV2> {
             val newSource = if (resetVoice) {
                 source.copy(
                     pluginId = newPluginId,
-                    locale = targetLocale,
+                    locale = "",
                     voice = ""
                 )
             } else {
                 source.copy(
                     pluginId = newPluginId,
-                    locale = targetLocale,
                     voice = migratedVoice
                 )
             }
-
-            val targetVoiceName = source.data["voiceName"]
-                ?: tts.displayName.orEmpty().ifBlank { newSource.voice }
-
-            val targetAvatarUrl = resolveVoiceAvatarUri(
-                packageName = context.packageName,
-                voiceName = targetVoiceName,
-                voiceId = newSource.voice,
-                pluginIcon = source.data["avatarUrl"]
-                    ?: source.data["icon"]
-            )
-
-            val newSourceWithData = newSource.copy(
-                data = source.data.toMutableMap().apply {
-                    if (targetVoiceName.isNotBlank()) {
-                        put("voiceName", targetVoiceName)
-                    }
-                    if (targetAvatarUrl.isNotBlank()) {
-                        put("avatarUrl", targetAvatarUrl)
-                        put("icon", targetAvatarUrl)
-                    }
-                }.toMap()
-            )
 
             val targetSampleRate = if (newSource.voice.isBlank()) {
                 fallbackTargetSampleRate
@@ -3120,7 +3052,6 @@ fun getDirectSelectedTtsForBatchMove(): List<SystemTtsV2> {
             if (source.pluginId == newSource.pluginId &&
                 source.locale == newSource.locale &&
                 source.voice == newSource.voice &&
-                source.data == newSourceWithData.data &&
                 config.audioFormat.sampleRate == targetSampleRate &&
                 config.audioFormat.isNeedDecode == targetNeedDecode
             ) {
@@ -3129,7 +3060,7 @@ fun getDirectSelectedTtsForBatchMove(): List<SystemTtsV2> {
 
             tts.copy(
                 config = config.copy(
-                    source = newSourceWithData,
+                    source = newSource,
                     audioFormat = config.audioFormat.copy(
                         sampleRate = targetSampleRate,
                         isNeedDecode = targetNeedDecode
@@ -4549,55 +4480,3 @@ IconButton(
         }
     }
 }
-
-private fun readVoiceIconByReflection(value: Any?): String? {
-    if (value == null) return null
-
-    val methodNames = listOf(
-        "getIcon",
-        "getAvatarUrl",
-        "getAvatar",
-        "getIconUrl",
-        "getImageUrl",
-        "getImage",
-        "getCoverUrl",
-        "getPhoto",
-        "getPic",
-        "getPortrait",
-        "getFace"
-    )
-
-    methodNames.forEach { methodName ->
-        runCatching {
-            val method = value.javaClass.methods.firstOrNull { it.name == methodName }
-            val result = method?.invoke(value)?.toString()?.trim()
-            if (!result.isNullOrBlank()) return result
-        }
-    }
-
-    val fieldNames = listOf(
-        "icon",
-        "avatarUrl",
-        "avatar",
-        "iconUrl",
-        "imageUrl",
-        "image",
-        "coverUrl",
-        "photo",
-        "pic",
-        "portrait",
-        "face"
-    )
-
-    fieldNames.forEach { fieldName ->
-        runCatching {
-            val field = value.javaClass.declaredFields.firstOrNull { it.name == fieldName }
-            field?.isAccessible = true
-            val result = field?.get(value)?.toString()?.trim()
-            if (!result.isNullOrBlank()) return result
-        }
-    }
-
-    return null
-}
-

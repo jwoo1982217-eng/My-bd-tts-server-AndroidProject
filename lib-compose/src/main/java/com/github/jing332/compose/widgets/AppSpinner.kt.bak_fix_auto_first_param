@@ -52,7 +52,6 @@ private fun TextFieldSelectionDialog(
     entries: List<String>,
     icons: List<Any?> = emptyList(),
     enabled: Boolean = true,
-    autoSelectFirstWhenValueMissing: Boolean = true,
 
     onSelectedChange: (key: Any, value: String) -> Unit,
     onValueSame: (current: Any, new: Any) -> Boolean = { current, new -> current == new },

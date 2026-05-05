@@ -33,7 +33,7 @@ internal fun RestoreDialog(
     onDismissRequest: () -> Unit,
     vm: BackupRestoreViewModel = viewModel(),
 ) {
-    var isLoading by remember { mutableStateOf(true) }
+    var isLoading by remember { mutableStateOf(false) }
     var needRestart by remember { mutableStateOf(false) }
     var pendingRestoreBytes by remember { mutableStateOf<ByteArray?>(null) }
     var hasRestored by remember { mutableStateOf(false) }
@@ -65,7 +65,7 @@ internal fun RestoreDialog(
             contract = AppActivityResultContracts.filePickerActivity()
         ) {
             if (it.second == null) {
-                onDismissRequest()
+                isLoading = false
                 return@rememberLauncherForActivityResult
             }
 
@@ -79,10 +79,6 @@ internal fun RestoreDialog(
                 }
             }
         }
-
-    LaunchedEffect(Unit) {
-        filePicker.launch(FilePickerActivity.RequestSelectFile(listOf("application/zip")))
-    }
 
     AppDialog(
         onDismissRequest = onDismissRequest,
@@ -166,7 +162,24 @@ internal fun RestoreDialog(
 
                 else -> {
                     TextButton(onClick = onDismissRequest) {
-                        Text(stringResource(id = R.string.confirm))
+                        Text(stringResource(id = R.string.cancel))
+                    }
+
+                    TextButton(
+                        onClick = {
+                            isLoading = true
+                            filePicker.launch(
+                                FilePickerActivity.RequestSelectFile(
+                                    listOf(
+                                        "application/zip",
+                                        "application/octet-stream",
+                                        "*/*"
+                                    )
+                                )
+                            )
+                        }
+                    ) {
+                        Text("选择备份文件")
                     }
                 }
             }

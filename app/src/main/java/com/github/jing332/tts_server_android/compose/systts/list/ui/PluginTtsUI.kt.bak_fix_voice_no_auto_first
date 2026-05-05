@@ -428,8 +428,7 @@ class PluginTtsUI : IConfigUI() {
                                     .fillMaxWidth()
                                     .padding(top = 4.dp),
                                 labelText = stringResource(R.string.label_voice),
-                                autoSelectFirstWhenValueMissing = false,
-                value = savedVoiceId,
+                                value = savedVoiceId,
                                 values = voiceValues,
                                 entries = voiceEntries,
                                 icons = voiceIcons,
