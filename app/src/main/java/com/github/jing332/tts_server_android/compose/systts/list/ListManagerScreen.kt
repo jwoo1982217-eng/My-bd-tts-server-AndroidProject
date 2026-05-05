@@ -3564,6 +3564,93 @@ if (showBatchMoveDialog) {
         }
     }
 
+    var showAvatarPickerForTts by remember { mutableStateOf<SystemTtsV2?>(null) }
+    if (showAvatarPickerForTts != null) {
+        AvatarPickerDialog(
+            onDismissRequest = {
+                showAvatarPickerForTts = null
+            },
+            onReset = {
+                val target = showAvatarPickerForTts
+                val config = target?.config as? TtsConfigurationDTO
+                val source = config?.source as? PluginTtsSource
+
+                if (target == null || config == null || source == null) {
+                    showAvatarPickerForTts = null
+                } else {
+                    val newData = source.data.toMutableMap().apply {
+                        remove("avatarUrl")
+                        remove("avatar")
+                        remove("iconUrl")
+                        remove("icon")
+                        remove("imageUrl")
+                        remove("image")
+                        remove("coverUrl")
+                        remove("cover")
+                        remove("photo")
+                        remove("pic")
+                        remove("portrait")
+                        remove("face")
+                    }.toMap()
+
+                    val newTts = target.copy(
+                        config = config.copy(
+                            source = source.copy(
+                                data = newData
+                            )
+                        )
+                    )
+
+                    scope.launch {
+                        withIO {
+                            dbm.systemTtsV2.update(newTts)
+                        }
+
+                        if (newTts.isEnabled) {
+                            SystemTtsService.notifyUpdateConfig()
+                        }
+
+                        showAvatarPickerForTts = null
+                    }
+                }
+            },
+            onSelect = { avatarUrl ->
+                val target = showAvatarPickerForTts
+                val config = target?.config as? TtsConfigurationDTO
+                val source = config?.source as? PluginTtsSource
+
+                if (target == null || config == null || source == null) {
+                    showAvatarPickerForTts = null
+                } else {
+                    val newData = source.data.toMutableMap().apply {
+                        put("avatarUrl", avatarUrl)
+                        put("icon", avatarUrl)
+                    }.toMap()
+
+                    val newTts = target.copy(
+                        config = config.copy(
+                            source = source.copy(
+                                data = newData
+                            )
+                        )
+                    )
+
+                    scope.launch {
+                        withIO {
+                            dbm.systemTtsV2.update(newTts)
+                        }
+
+                        if (newTts.isEnabled) {
+                            SystemTtsService.notifyUpdateConfig()
+                        }
+
+                        showAvatarPickerForTts = null
+                    }
+                }
+            }
+        )
+    }
+
     var showOptions by rememberSaveable { mutableStateOf(false) }
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     var moveGroupDialog by remember { mutableStateOf<SystemTtsGroup?>(null) }
@@ -3797,6 +3884,9 @@ if (showBatchMoveDialog) {
                 name = item.displayName,
                 avatarRes = resolveLocalAvatarRes(item),
                 avatarUrl = resolvePluginAvatarUrl(item),
+                onAvatarClick = {
+                    showAvatarPickerForTts = item
+                },
                 tagName = descriptor.tagName,
                 type = descriptor.type,
                 standby = descriptor.standby,
@@ -4142,6 +4232,9 @@ if (showBatchMoveDialog) {
                         name = item.displayName,
                 avatarRes = resolveLocalAvatarRes(item),
                 avatarUrl = resolvePluginAvatarUrl(item),
+                onAvatarClick = {
+                    showAvatarPickerForTts = item
+                },
                         tagName = descriptor.tagName,
                         type = descriptor.type,
                         standby = descriptor.standby,

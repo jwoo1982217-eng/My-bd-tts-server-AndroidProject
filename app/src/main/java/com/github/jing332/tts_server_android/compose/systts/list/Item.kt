@@ -83,6 +83,7 @@ internal fun Item(
     onEdit: () -> Unit,
     onAudition: () -> Unit,
     onExport: () -> Unit,
+    onAvatarClick: (() -> Unit)? = null,
 ) {
     val view = LocalView.current
     val context = LocalContext.current
@@ -93,12 +94,8 @@ internal fun Item(
         oneLine(raw)
     }
 
-    val limitTagLen by remember { AppConfig.limitTagLength }
-    val limitedTagName = remember(tagName, limitTagLen) {
-        val clean = oneLine(tagName)
-        val safeLen = if (limitTagLen == 0) 0 else maxOf(limitTagLen, 32)
-        val raw = if (safeLen == 0) clean else clean.limitLength(safeLen)
-        formatTwoLineTag(raw)
+    val limitedTagName = remember(tagName) {
+        compactDisplayTag(tagName)
     }
 
     val infoLine = remember(desc, params) {
@@ -127,7 +124,7 @@ internal fun Item(
     OutlinedCard(
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = 144.dp),
+            .heightIn(min = 128.dp),
         shape = RoundedCornerShape(18.dp),
         border = BorderStroke(
             width = 1.dp,
@@ -140,7 +137,7 @@ internal fun Item(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 144.dp)
+                .heightIn(min = 128.dp)
                 .combinedClickable(
                     onClickLabel = stringResource(R.string.quick_edit),
                     onClick = onClick,
@@ -153,252 +150,225 @@ internal fun Item(
                 .padding(horizontal = 8.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Checkbox(
-                modifier = Modifier
-                    .size(34.dp)
-                    .detectReorder(reorderState),
-                checked = enabled,
-                onCheckedChange = onEnabledChange,
-            )
+            Box(
+                modifier = Modifier.width(38.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Checkbox(
+                    modifier = Modifier
+                        .size(34.dp)
+                        .detectReorder(reorderState),
+                    checked = enabled,
+                    onCheckedChange = onEnabledChange,
+                )
+            }
 
             Spacer(modifier = Modifier.width(8.dp))
 
-            Column(
+            Row(
                 modifier = Modifier
                     .weight(1f)
                     .padding(end = 8.dp),
-                horizontalAlignment = Alignment.Start,
-                verticalArrangement = Arrangement.Center
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Text(
-                    text = titleLine,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-
-                Spacer(modifier = Modifier.height(6.dp))
-
                 Box(
                     modifier = Modifier
-                        .size(42.dp)
-                        .clip(CircleShape),
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .then(
+                            if (onAvatarClick != null) {
+                                Modifier.clickable { onAvatarClick.invoke() }
+                            } else {
+                                Modifier
+                            }
+                        ),
                     contentAlignment = Alignment.Center
                 ) {
                     AsyncImage(
-    model = ImageRequest.Builder(context)
-        .data(avatarSource)
-        .crossfade(true)
-        .placeholder(avatarRes)
-        .error(avatarRes)
-        .fallback(avatarRes)
-        .build(),
-    contentDescription = null,
-    contentScale = ContentScale.Fit,
-    modifier = Modifier
-        .size(42.dp)
-        .clip(CircleShape)
-)
+                        model = ImageRequest.Builder(context)
+                            .data(avatarSource)
+                            .crossfade(true)
+                            .placeholder(avatarRes)
+                            .error(avatarRes)
+                            .fallback(avatarRes)
+                            .build(),
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(CircleShape)
+                    )
                 }
 
-                Spacer(modifier = Modifier.height(5.dp))
+                Column(
+                    modifier = Modifier.weight(1f),
+                    horizontalAlignment = Alignment.Start,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = titleLine,
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
 
-                Text(
-                    text = infoLine,
-                    style = MaterialTheme.typography.labelSmall,
-                    fontSize = 11.sp,
-                    lineHeight = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    softWrap = false,
-                    overflow = TextOverflow.Ellipsis
-                )
+                        if (limitedTagName.isNotEmpty()) {
+                            Text(
+                                text = limitedTagName,
+                                modifier = Modifier.widthIn(max = 122.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
 
-                if (sampleRateLine.isNotBlank()) {
-                    Spacer(modifier = Modifier.height(3.dp))
+                    Spacer(modifier = Modifier.height(5.dp))
 
                     Text(
-                        text = "声音采样率：$sampleRateLine",
+                        text = infoLine,
                         style = MaterialTheme.typography.labelSmall,
-                        fontSize = 10.sp,
-                        lineHeight = 12.sp,
+                        fontSize = 11.sp,
+                        lineHeight = 13.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         softWrap = false,
                         overflow = TextOverflow.Ellipsis
                     )
+
+                    if (sampleRateLine.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(3.dp))
+
+                        Text(
+                            text = "声音采样率：$sampleRateLine",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 10.sp,
+                            lineHeight = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    val extraInfo = listOf(
+                        type.takeIf { it.isNotBlank() }?.let { "插件：$it" }
+                    ).filterNotNull().joinToString("｜")
+
+                    if (extraInfo.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(3.dp))
+
+                        Text(
+                            text = extraInfo,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 10.sp,
+                            lineHeight = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
             }
 
             Column(
-                modifier = Modifier.width(132.dp),
-                horizontalAlignment = Alignment.End,
-                verticalArrangement = Arrangement.Center
+                modifier = Modifier.width(38.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterVertically)
             ) {
-                if (limitedTagName.isNotEmpty()) {
-                    TagScreen(
-    tag = limitedTagName,
-    modifier = Modifier
-        .widthIn(max = 128.dp)
-        .padding(bottom = 4.dp)
-)
-                }
-
-                Row(
-    modifier = Modifier.fillMaxWidth(),
-    horizontalArrangement = Arrangement.End,
-    verticalAlignment = Alignment.CenterVertically
-) {
-    // 编辑按钮：放在试听按钮左边
-    Box(
-        modifier = Modifier
-            .size(32.dp)
-            .clip(CircleShape)
-            .clickable { onEdit() },
-        contentAlignment = Alignment.Center
-    ) {
-        Icon(
-            imageVector = Icons.Default.Edit,
-            contentDescription = stringResource(R.string.edit_desc, name),
-            modifier = Modifier.size(22.dp)
-        )
-    }
-
-    // 试听按钮：耳机按钮
-    Box(
-        modifier = Modifier
-            .size(32.dp)
-            .clip(CircleShape)
-            .clickable { onAudition() },
-        contentAlignment = Alignment.Center
-    ) {
-        Icon(
-            imageVector = Icons.Default.Headphones,
-            contentDescription = stringResource(R.string.audition),
-            modifier = Modifier.size(22.dp)
-        )
-    }
-
-    var showOptions by remember { mutableStateOf(false) }
-
-    // 更多按钮：只保留复制、导出、删除
-    Box(
-        modifier = Modifier
-            .size(32.dp)
-            .clip(CircleShape)
-            .clickable { showOptions = true },
-        contentAlignment = Alignment.Center
-    ) {
-        Icon(
-            imageVector = Icons.Default.MoreVert,
-            contentDescription = stringResource(R.string.more_options_desc, name),
-            modifier = Modifier.size(22.dp)
-        )
-
-        DropdownMenu(
-            expanded = showOptions,
-            onDismissRequest = { showOptions = false }
-        ) {
-            DropdownMenuItem(
-                text = { Text(stringResource(id = R.string.copy)) },
-                onClick = {
-                    showOptions = false
-                    onCopy()
-                },
-                leadingIcon = {
-                    Icon(Icons.Default.CopyAll, null)
-                }
-            )
-
-            DropdownMenuItem(
-                text = { Text(stringResource(id = R.string.export_config)) },
-                onClick = {
-                    showOptions = false
-                    onExport()
-                },
-                leadingIcon = {
-                    Icon(Icons.Default.Output, null)
-                }
-            )
-
-            HorizontalDivider()
-
-            DropdownMenuItem(
-                text = { Text(stringResource(id = R.string.delete)) },
-                onClick = {
-                    showOptions = false
-                    onDelete()
-                },
-                leadingIcon = {
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .clickable { onAudition() },
+                    contentAlignment = Alignment.Center
+                ) {
                     Icon(
-                        Icons.Default.DeleteForever,
-                        null,
-                        tint = MaterialTheme.colorScheme.error
+                        imageVector = Icons.Default.Headphones,
+                        contentDescription = stringResource(R.string.audition),
+                        modifier = Modifier.size(22.dp)
                     )
                 }
-            )
-        }
-    }
-}
-                if (standby || type.isNotBlank()) {
-                    Text(
-                        text = listOf(
-                            if (standby) stringResource(id = R.string.systts_standby) else "",
-                            formatTwoLinePluginName(type)
-                        ).filter { it.isNotBlank() }.joinToString(" "),
-                        style = MaterialTheme.typography.labelSmall,
-                        fontSize = 11.sp,
-                        lineHeight = 14.sp,
-                        color = MaterialTheme.colorScheme.tertiary,
-                        maxLines = 2,
-                        softWrap = true,
-                        overflow = TextOverflow.Ellipsis,
-                        textAlign = TextAlign.End,
-                        modifier = Modifier
-                            .widthIn(max = 128.dp)
-                            .padding(top = 2.dp)
+
+                var showOptions by remember { mutableStateOf(false) }
+
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .clickable { showOptions = true },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = stringResource(R.string.more_options_desc, name),
+                        modifier = Modifier.size(22.dp)
                     )
+
+                    DropdownMenu(
+                        expanded = showOptions,
+                        onDismissRequest = { showOptions = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("编辑") },
+                            onClick = {
+                                showOptions = false
+                                onEdit()
+                            },
+                            leadingIcon = {
+                                Icon(Icons.Default.Edit, null)
+                            }
+                        )
+
+                        DropdownMenuItem(
+                            text = { Text(stringResource(id = R.string.copy)) },
+                            onClick = {
+                                showOptions = false
+                                onCopy()
+                            },
+                            leadingIcon = {
+                                Icon(Icons.Default.CopyAll, null)
+                            }
+                        )
+
+                        DropdownMenuItem(
+                            text = { Text(stringResource(id = R.string.export_config)) },
+                            onClick = {
+                                showOptions = false
+                                onExport()
+                            },
+                            leadingIcon = {
+                                Icon(Icons.Default.Output, null)
+                            }
+                        )
+
+                        DropdownMenuItem(
+                            text = { Text(stringResource(id = R.string.delete)) },
+                            onClick = {
+                                showOptions = false
+                                onDelete()
+                            }
+                        )
+                    }
                 }
             }
         }
     }
 }
-
-@Composable
-private fun TagScreen(
-    modifier: Modifier = Modifier,
-    tag: String
-) {
-    OutlinedCard(
-        shape = RoundedCornerShape(9.dp),
-        modifier = modifier,
-        border = BorderStroke(
-            width = 1.dp,
-            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.85f)
-        ),
-        colors = CardDefaults.outlinedCardColors(
-            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f)
-        )
-    ) {
-        Text(
-            text = tag,
-            style = MaterialTheme.typography.labelSmall,
-            fontSize = 10.sp,
-            lineHeight = 12.sp,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.secondary,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 2.dp),
-            overflow = TextOverflow.Ellipsis,
-            textAlign = TextAlign.Center,
-            maxLines = 2,
-            softWrap = true
-        )
-    }
-}
-
 private fun oneLine(text: String): String {
     return text
         .replace("<br>", " ")
@@ -481,6 +451,28 @@ private fun formatTwoLineTag(tag: String): String {
         clean
     }
 }
+private fun compactDisplayTag(tag: String): String {
+    val clean = oneLine(tag)
+        .replace("⚠️", "")
+        .trim()
+
+    if (clean.isBlank()) return ""
+
+    val bracket = Regex("""【[^】]+】""").find(clean)?.value
+    if (!bracket.isNullOrBlank()) return bracket
+
+    val tagLike = Regex(
+        """(?:男|女|旁白|在线音效|本地音效)/(?:男童|女童|少年|少女|男青年|女青年|男中年|女中年|男老年|女老年|[^\s】]+)\d{1,3}|(?:男童|女童|少年|少女|男青年|女青年|男中年|女中年|男老年|女老年|旁白)\d{1,3}"""
+    ).find(clean)?.value
+
+    if (!tagLike.isNullOrBlank()) {
+        return if (tagLike.startsWith("【")) tagLike else "【$tagLike】"
+    }
+
+    val first = clean.split(Regex("""\s+""")).firstOrNull().orEmpty()
+    return if (first.startsWith("【")) first else "【$first】"
+}
+
 
 private fun formatTwoLinePluginName(type: String): String {
     val clean = oneLine(type)

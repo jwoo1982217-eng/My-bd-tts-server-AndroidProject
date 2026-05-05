@@ -48,6 +48,25 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 
+
+private fun isVoiceOptionalPlugin(
+    pluginId: String,
+    pluginName: String,
+    locale: String,
+): Boolean {
+    val id = pluginId.trim()
+    val name = pluginName.trim()
+    val loc = locale.trim()
+
+    return id == "mingwuyan" ||
+            id.contains("mingwuyan", ignoreCase = true) ||
+            name.contains("角色管理") ||
+            name.contains("Vivi", ignoreCase = true) ||
+            name.contains("变身") ||
+            loc.contains("vivi", ignoreCase = true) ||
+            loc.contains("变身")
+}
+
 class PluginTtsUI : IConfigUI() {
     companion object {
         const val TAG = "PluginTtsUI"
@@ -188,15 +207,31 @@ class PluginTtsUI : IConfigUI() {
 
         SaveActionHandler {
 
+            val hasStandardVoiceList = realVm.voices.isNotEmpty()
+            val saveTts = if (tts.voice.isBlank() && hasStandardVoiceList) {
+                tts.copy(voice = realVm.voices.first().id)
+            } else {
+                tts
+            }
+
             if (currentPlugin == null) {
                 context.toast("原插件不存在，请先更换插件并重新选择声音")
                 false
-            } else if (tts.voice.isBlank()) {
+            } else if (realVm.isLoading) {
+                context.toast("插件还没有加载完成，请稍后再保存")
+                false
+            } else if (hasStandardVoiceList && saveTts.voice.isBlank()) {
                 context.toast("请先选择声音")
                 false
             } else {
                 val sampleRate = try {
-                    withIO { realVm.engine.getSampleRate(tts.locale, tts.voice) ?: 16000 }
+                    withIO {
+                        if (saveTts.voice.isBlank()) {
+                            24000
+                        } else {
+                            realVm.engine.getSampleRate(saveTts.locale, saveTts.voice) ?: 16000
+                        }
+                    }
                 } catch (_: UninitializedPropertyAccessException) {
                     context.toast("插件还没有加载完成，请稍后再保存")
                     null
@@ -209,7 +244,13 @@ class PluginTtsUI : IConfigUI() {
                 }
 
                 val isNeedDecode = try {
-                    withIO { realVm.engine.isNeedDecode(tts.locale, tts.voice) }
+                    withIO {
+                        if (saveTts.voice.isBlank()) {
+                            false
+                        } else {
+                            realVm.engine.isNeedDecode(saveTts.locale, saveTts.voice)
+                        }
+                    }
                 } catch (_: UninitializedPropertyAccessException) {
                     context.toast("插件还没有加载完成，请稍后再保存")
                     null
@@ -222,7 +263,7 @@ class PluginTtsUI : IConfigUI() {
                 }
 
                 if (sampleRate != null && isNeedDecode != null) {
-                    val currentVoiceItem = realVm.voices.firstOrNull { it.id == tts.voice }
+                    val currentVoiceItem = realVm.voices.firstOrNull { it.id == saveTts.voice }
 
                     val saveVoiceName = currentVoiceItem?.name
                         ?: tts.data["voiceName"]
@@ -231,7 +272,7 @@ class PluginTtsUI : IConfigUI() {
                     val saveAvatarUrl = resolveVoiceAvatarUri(
                         packageName = context.packageName,
                         voiceName = saveVoiceName,
-                        voiceId = tts.voice,
+                        voiceId = saveTts.voice,
                         pluginIcon = currentVoiceItem?.icon
                             ?: tts.data["avatarUrl"]
                             ?: tts.data["icon"]
@@ -256,7 +297,7 @@ class PluginTtsUI : IConfigUI() {
                                 systts.displayName
                             },
                             config = (systts.config as TtsConfigurationDTO).copy(
-                                source = tts.copy(
+                                source = saveTts.copy(
                                     data = newData
                                 ),
                                 audioFormat = BasicAudioFormat(
@@ -308,11 +349,23 @@ class PluginTtsUI : IConfigUI() {
                         .fillMaxWidth()
                         .padding(top = 8.dp),
                     onAudition = {
+                        val hasStandardVoiceList = realVm.voices.isNotEmpty()
+                        val auditionTts = if (tts.voice.isBlank() && hasStandardVoiceList) {
+                            tts.copy(voice = realVm.voices.first().id)
+                        } else {
+                            tts
+                        }
+
                         if (currentPlugin == null) {
                             context.toast("原插件不存在，请先更换插件并重新选择声音")
-                        } else if (tts.voice.isBlank()) {
+                        } else if (realVm.isLoading) {
+                            context.toast("插件还没有加载完成，请稍后再试听")
+                        } else if (hasStandardVoiceList && auditionTts.voice.isBlank()) {
                             context.toast("请先选择声音")
                         } else {
+                            if (tts.voice.isBlank() && auditionTts.voice.isNotBlank()) {
+                                onSysttsChange(systts.copySource(auditionTts))
+                            }
                             showAuditionDialog = true
                         }
                     }
