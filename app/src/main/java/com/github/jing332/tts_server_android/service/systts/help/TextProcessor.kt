@@ -206,14 +206,26 @@ class TextProcessor : ITextProcessor {
     }
 
     private fun buildModuleCtxJson(text: String): String {
+        val readerChapter = ReaderChapterBridgeClient.fetchCurrentChapterJson()
+        val readerChapterJson = readerChapter.toString()
+
+        val metaJson = JSONObject()
+            .put("readerChapterJson", readerChapterJson)
+            .put("readerChapterJsonLen", readerChapterJson.length)
+            .put("readerChapterBridgeMark", "reader-bridge-meta-v1")
+
         return JSONObject()
             .put("version", 1)
             .put("text", text)
             .put("segments", JSONArray())
+            .put("readerChapter", readerChapter)
+            .put("readerChapterJson", readerChapterJson)
+            .put("readerChapterJsonLen", readerChapterJson.length)
+            .put("readerChapterBridgeMark", "reader-bridge-v2")
             .put("roles", JSONObject())
             .put("emotions", JSONObject())
             .put("route", JSONObject())
-            .put("meta", JSONObject())
+            .put("meta", metaJson)
             .toString()
     }
 
@@ -438,6 +450,18 @@ class TextProcessor : ITextProcessor {
             meta.put("moduleId", module.id)
             meta.put("moduleName", module.moduleName.ifBlank { module.name })
             meta.put("moduleApiFile", "module_api_${module.id}.txt")
+
+            val readerChapter = ReaderChapterBridgeClient.fetchCurrentChapterJson()
+            val readerChapterJson = readerChapter.toString()
+
+            obj.put("readerChapter", readerChapter)
+            obj.put("readerChapterJson", readerChapterJson)
+            obj.put("readerChapterJsonLen", readerChapterJson.length)
+            obj.put("readerChapterBridgeMark", "reader-bridge-runtime-v1")
+
+            meta.put("readerChapterJson", readerChapterJson)
+            meta.put("readerChapterJsonLen", readerChapterJson.length)
+            meta.put("readerChapterBridgeMark", "reader-bridge-runtime-v1")
 
             obj.put("meta", meta)
             obj.toString()

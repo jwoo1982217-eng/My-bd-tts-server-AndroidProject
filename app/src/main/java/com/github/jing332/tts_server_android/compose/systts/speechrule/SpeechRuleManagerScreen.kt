@@ -597,7 +597,7 @@ DropdownMenuItem(
                     Column {
                         Text("请选择添加方式")
 
-                        if (isFullRuleProject(group)) {
+                        if (true) {
                             TextButton(
                                 modifier = Modifier.fillMaxWidth(),
                                 onClick = {
@@ -773,21 +773,13 @@ DropdownMenuItem(
                         version = 1,
                         ruleId = uniqueSpeechRuleModuleRuleId("${safeProject}_${safeModule}_$now"),
                         author = "",
-                          code = if (isFullRuleProject(group)) {
-                              newEmptyModuleCode(targetModuleName, createModuleStage)
-                          } else {
-                              ""
-                          },
+                          code = newEmptyModuleCode(targetModuleName, createModuleStage),
                           projectId = group.key,
                         projectName = group.name,
                         projectMode = group.rules.firstOrNull()?.projectMode?.ifBlank { "full_rule" } ?: "full_rule",
                         moduleId = "${safeModule}_$now",
                         moduleName = targetModuleName,
-                        moduleType = if (isFullRuleProject(group)) {
-                              normalizeModuleStage(createModuleStage)
-                          } else {
-                              "custom"
-                          },
+                        moduleType = normalizeModuleStage(createModuleStage),
                           moduleOrder = group.rules.size,
                         isModule = true
                     )
@@ -828,16 +820,8 @@ DropdownMenuItem(
                                 projectMode = group.rules.firstOrNull()?.projectMode?.ifBlank { "full_rule" } ?: "full_rule",
                                 moduleId = "${safeModule}_${now + index}",
                                 moduleName = rawModuleName,
-                                  code = if (isFullRuleProject(group)) {
-                                      ensureModuleStageInCode(rule.code, importModuleStage, rawModuleName)
-                                  } else {
-                                      rule.code
-                                  },
-                                  moduleType = if (isFullRuleProject(group)) {
-                                      normalizeModuleStage(importModuleStage)
-                                  } else {
-                                      rule.moduleType.ifBlank { "imported" }
-                                  },
+                                  code = ensureModuleStageInCode(rule.code, importModuleStage, rawModuleName),
+                                  moduleType = normalizeModuleStage(importModuleStage),
                                   moduleOrder = group.rules.size + index,
                                 isModule = true
                             )

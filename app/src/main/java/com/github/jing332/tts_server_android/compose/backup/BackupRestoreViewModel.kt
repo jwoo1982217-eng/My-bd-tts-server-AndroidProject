@@ -91,9 +91,9 @@ class BackupRestoreViewModel(application: Application) : AndroidViewModel(applic
                     compareBy<File> {
                         when {
                             it.name.endsWith("plugins.json") -> 0
-                            it.name.endsWith("speechRules.json") -> 1
-                            it.name.endsWith("replaceRules.json") -> 2
-                            it.name.endsWith("list.json") -> 3
+                            it.name.endsWith("list.json") -> 1
+                            it.name.endsWith("speechRules.json") -> 2
+                            it.name.endsWith("replaceRules.json") -> 3
                             else -> 9
                         }
                     }
@@ -247,7 +247,6 @@ class BackupRestoreViewModel(application: Application) : AndroidViewModel(applic
         if (list.isEmpty()) return
 
         val groupEntryMap = linkedMapOf<Long, GroupWithSystemTts>()
-
         list.forEach { item ->
             groupEntryMap[item.group.id] = item
         }
@@ -260,21 +259,37 @@ class BackupRestoreViewModel(application: Application) : AndroidViewModel(applic
         }
 
         val insertedGroupIds = mutableSetOf<Long>()
+        val visitingGroupIds = mutableSetOf<Long>()
 
         fun insertGroupRecursive(oldGroupId: Long) {
             if (insertedGroupIds.contains(oldGroupId)) return
+
+            // 防止备份里的 parentGroupId 出现循环引用：
+            // A -> B -> A 这种结构会导致无限递归和 StackOverflow。
+            if (visitingGroupIds.contains(oldGroupId)) {
+                return
+            }
 
             val entry = groupEntryMap[oldGroupId] ?: return
             val oldGroup = entry.group
             val oldParentId = oldGroup.parentGroupId
 
+            visitingGroupIds.add(oldGroupId)
+
             val newParentId =
                 if (oldParentId != 0L && groupEntryMap.containsKey(oldParentId)) {
-                    insertGroupRecursive(oldParentId)
-                    oldToNewGroupId[oldParentId] ?: 0L
+                    if (visitingGroupIds.contains(oldParentId)) {
+                        // 父级形成环，断开父级关系，作为顶层分组导入。
+                        0L
+                    } else {
+                        insertGroupRecursive(oldParentId)
+                        oldToNewGroupId[oldParentId] ?: 0L
+                    }
                 } else {
                     0L
                 }
+
+            visitingGroupIds.remove(oldGroupId)
 
             val newGroupId = oldToNewGroupId[oldGroupId] ?: return
 
@@ -326,8 +341,20 @@ class BackupRestoreViewModel(application: Application) : AndroidViewModel(applic
             }
         }
 
+        val backupTtsCount = list.sumOf { it.list.size }
+
+        if (backupTtsCount > 0 && newTtsList.isEmpty()) {
+            error("配置列表恢复异常：备份中有 $backupTtsCount 个TTS卡片，但转换后 newTtsList=0")
+        }
+
         if (newTtsList.isNotEmpty()) {
             dbm.systemTtsV2.insert(*newTtsList.toTypedArray())
+        }
+
+        val dbTtsCountAfter = dbm.systemTtsV2.all.size
+
+        if (backupTtsCount > 0 && dbTtsCountAfter == 0) {
+            error("配置列表恢复异常：备份中有 $backupTtsCount 个TTS卡片，已执行insert，但数据库中TTS卡片仍为0")
         }
     }
 

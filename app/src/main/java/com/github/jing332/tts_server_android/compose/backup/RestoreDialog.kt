@@ -44,7 +44,8 @@ internal fun RestoreDialog(
     fun restoreWithMode(mode: SpeechRuleImportMode) {
         val bytes = pendingRestoreBytes ?: return
 
-        pendingRestoreBytes = null
+        // 不要在恢复开始前清空 pendingRestoreBytes。
+        // 否则恢复过程中一旦失败或重组，界面会回到“请选择备份文件”，看起来像又弹了一次选择文件。
         isLoading = true
 
         scope.launch {
@@ -52,8 +53,10 @@ internal fun RestoreDialog(
                 vm.speechRuleImportMode = mode
                 needRestart = vm.restore(bytes)
                 hasRestored = true
+                pendingRestoreBytes = null
                 isLoading = false
             }.onFailure {
+                // 失败时保留 pendingRestoreBytes，用户可以换导入方式重试，不需要重新选文件。
                 isLoading = false
                 context.displayErrorDialog(it)
             }

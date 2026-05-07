@@ -17,31 +17,58 @@ object MapConverters {
 
     @TypeConverter
     fun toMap(s: String): Map<String, String> {
-        return json.decodeFromString(s) ?: emptyMap()
+        if (s.isBlank()) return emptyMap()
+        return try {
+            json.decodeFromString<Map<String, String>>(s)
+        } catch (_: Exception) {
+            emptyMap()
+        }
     }
 
     @TypeConverter
     fun fromMap(tags: Map<String, String>): String {
-        return json.encodeToString(tags) ?: ""
+        return try {
+            json.encodeToString(tags)
+        } catch (_: Exception) {
+            "{}"
+        }
     }
 
     @TypeConverter
     fun toNestMap(s: String): Map<String, Map<String, String>> {
-        return json.decodeFromString(s) ?: emptyMap()
+        if (s.isBlank()) return emptyMap()
+        return try {
+            json.decodeFromString<Map<String, Map<String, String>>>(s)
+        } catch (_: Exception) {
+            emptyMap()
+        }
     }
 
     @TypeConverter
     fun fromNestMap(map: Map<String, Map<String, String>>): String {
-        return json.encodeToString(map) ?: ""
+        return try {
+            json.encodeToString(map)
+        } catch (_: Exception) {
+            "{}"
+        }
     }
 
     @TypeConverter
     fun toMapList(s: String): Map<String, List<Map<String, String>>> {
-        return json.decodeFromString(s) ?: emptyMap()
+        if (s.isBlank()) return emptyMap()
+        return try {
+            json.decodeFromString<Map<String, List<Map<String, String>>>>(s)
+        } catch (_: Exception) {
+            emptyMap()
+        }
     }
 
     @TypeConverter
     fun fromMapList(tags: Map<String, List<Map<String, String>>>): String {
-        return json.encodeToString(tags) ?: ""
+        return try {
+            json.encodeToString(tags)
+        } catch (_: Exception) {
+            "{}"
+        }
     }
 }

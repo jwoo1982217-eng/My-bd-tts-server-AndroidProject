@@ -25,6 +25,7 @@
         tools:ignore="SystemPermissionTypo" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <application
         android:name=".App"
         android:allowBackup="true"
@@ -240,6 +241,23 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+    
+        <service
+            android:name=".service.LegadoBridgeKeepAliveService"
+            android:exported="true"
+            android:foregroundServiceType="dataSync">
+            <intent-filter>
+                <action android:name="${applicationId}.action.LEGADO_BRIDGE_START" />
+                <action android:name="${applicationId}.action.LEGADO_BRIDGE_STOP" />
+            </intent-filter>
+        </service>
+
+
+        <provider
+            android:name=".provider.LegadoBridgeProvider"
+            android:authorities="${applicationId}.legado.bridge"
+            android:exported="true" />
+
     </application>
 
 </manifest>
