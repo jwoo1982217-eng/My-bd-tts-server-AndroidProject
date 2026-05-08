@@ -320,7 +320,7 @@ object AudioCacheFactory {
         writeManifest(dir, manifest)
 
         for (item in queue) {
-            if (hasItem(manifest, item.index, item.text, configFingerprint)) continue
+            if (hasItem(manifest, item, configFingerprint)) continue
 
             updateQueueItem(dir, item.index, "caching_audio")
             val config = resolveTtsConfig(manager, item)
@@ -511,9 +511,13 @@ object AudioCacheFactory {
                     .prepareChapterAudioQueueIfExists(
                         mapOf(
                             "bookName" to bookName,
+                            "bookTitle" to bookName,
+                            "name" to bookName,
                             "bookUrl" to chapter.optString("bookUrl", ""),
+                            "bookKey" to chapter.optString("bookUrl", ""),
                             "chapterIndex" to chapter.optInt("chapterIndex", -1),
                             "chapterTitle" to chapter.optString("chapterTitle", ""),
+                            "chapterName" to chapter.optString("chapterTitle", ""),
                             "chapterText" to chapterText,
                             "text" to chapterText
                         )
@@ -526,20 +530,58 @@ object AudioCacheFactory {
         }
 
         val queue = rawQueue.mapIndexedNotNull { fallbackIndex, raw ->
-            val text = raw["text"]?.toString()?.trim().orEmpty()
+            val text = raw.firstString("text", "content", "line", "sentence", "value", "台词", "内容")
             if (text.isBlank()) return@mapIndexedNotNull null
 
             val index = raw["index"]?.toString()?.toIntOrNull() ?: fallbackIndex
+            val tag = raw.firstString(
+                "tag",
+                "role",
+                "roleName",
+                "speaker",
+                "speakerName",
+                "character",
+                "characterName",
+                "name",
+                "人物",
+                "角色",
+                "说话人"
+            )
+            val voice = raw.firstString(
+                "voice",
+                "voiceName",
+                "voiceId",
+                "speakerVoice",
+                "tts",
+                "ttsName",
+                "音色",
+                "声音"
+            )
+            val emotion = raw.firstString("emotion", "emo", "style", "mood", "情绪", "感情")
+            val speed = raw.firstFloat(1f, "speed", "rate", "语速")
+            val pitch = raw.firstFloat(1f, "pitch", "tone", "音高")
+            val volume = raw.firstFloat(1f, "volume", "vol", "音量")
+            val normalizedRaw = JSONObject(raw)
+                .put("index", index)
+                .put("text", text)
+                .put("tag", tag)
+                .put("voice", voice)
+                .put("emotion", emotion)
+                .put("speed", speed)
+                .put("pitch", pitch)
+                .put("volume", volume)
+                .put("status", raw.firstString("status", "state").ifBlank { "pending" })
+
             QueueItem(
                 index = index,
                 text = text,
-                tag = raw["tag"]?.toString().orEmpty(),
-                voice = raw["voice"]?.toString().orEmpty(),
-                emotion = raw["emotion"]?.toString().orEmpty(),
-                speed = raw["speed"]?.toString()?.toFloatOrNull() ?: 1f,
-                pitch = raw["pitch"]?.toString()?.toFloatOrNull() ?: 1f,
-                volume = raw["volume"]?.toString()?.toFloatOrNull() ?: 1f,
-                raw = JSONObject(raw)
+                tag = tag,
+                voice = voice,
+                emotion = emotion,
+                speed = speed,
+                pitch = pitch,
+                volume = volume,
+                raw = normalizedRaw
             )
         }
 
@@ -599,15 +641,46 @@ object AudioCacheFactory {
             .firstOrNull { it.isNotBlank() }
             ?: return null
 
-        val exact = dbm.speechRuleDao.getByRuleId(ruleId) ?: return null
-        if (!exact.isModule) return exact
+        val exact = dbm.speechRuleDao.getByRuleId(ruleId)
+        if (exact != null) {
+            if (!exact.isModule) return exact
+
+            return dbm.speechRuleDao.all.firstOrNull {
+                it.projectId == exact.projectId && !it.isModule &&
+                    (it.moduleId == "main" || it.moduleType == "main" || it.moduleType == "pipeline_entry")
+            } ?: dbm.speechRuleDao.all.firstOrNull {
+                it.projectId == exact.projectId && !it.isModule
+            }
+        }
+
+        val baseId = normalizeSpeechRuleLookupId(ruleId)
+        val fallbackRule = dbm.speechRuleDao.allEnabled.firstOrNull {
+            !it.isModule && normalizeSpeechRuleLookupId(it.ruleId) == baseId
+        }
+        if (fallbackRule != null) return fallbackRule
+
+        val fallbackModule = dbm.speechRuleDao.all.firstOrNull {
+            it.isModule && normalizeSpeechRuleLookupId(it.ruleId) == baseId
+        } ?: return null
 
         return dbm.speechRuleDao.all.firstOrNull {
-            it.projectId == exact.projectId && !it.isModule &&
+            it.projectId == fallbackModule.projectId && !it.isModule &&
                 (it.moduleId == "main" || it.moduleType == "main" || it.moduleType == "pipeline_entry")
         } ?: dbm.speechRuleDao.all.firstOrNull {
-            it.projectId == exact.projectId && !it.isModule
+            it.projectId == fallbackModule.projectId && !it.isModule
         }
+    }
+
+    private fun normalizeSpeechRuleLookupId(ruleId: String): String {
+        val value = ruleId.trim()
+        if (value.isBlank()) return value
+
+        val regex = Regex(
+            pattern = """([._-](db|dev|new|test|debug|bak|backup|manual)(_\d{3})?)$""",
+            option = RegexOption.IGNORE_CASE
+        )
+
+        return value.replace(regex, "")
     }
 
     private fun locateChapterForText(window: JSONObject, text: String): JSONObject? {
@@ -757,16 +830,16 @@ object AudioCacheFactory {
 
     private fun hasItem(
         manifest: JSONObject,
-        index: Int,
-        text: String,
+        queueItem: QueueItem,
         configFingerprint: String,
     ): Boolean {
         val items = manifest.optJSONArray("items") ?: return false
-        val textHash = text.md5()
+        val textHash = queueItem.text.md5()
         for (i in 0 until items.length()) {
             val item = items.optJSONObject(i) ?: continue
-            if (item.optInt("index", -1) != index && item.optString("textHash") != textHash) continue
+            if (item.optInt("index", -1) != queueItem.index && item.optString("textHash") != textHash) continue
             if (item.optString("configFingerprint") != configFingerprint) continue
+            if (!item.matchesQueueItem(queueItem)) continue
             val file = File(item.optString("path", ""))
             return file.exists() && file.length() > 0
         }
@@ -880,21 +953,21 @@ object AudioCacheFactory {
         if (manifest == null && queue.isEmpty()) return null
 
         val manifestItems = manifest?.optJSONArray("items")
-        val readyByIndex = mutableMapOf<Int, JSONObject>()
+        val readyItems = mutableListOf<JSONObject>()
         if (manifestItems != null) {
             for (i in 0 until manifestItems.length()) {
                 val item = manifestItems.optJSONObject(i) ?: continue
                 val path = item.optString("path", "")
                 val file = File(path)
                 if (file.exists() && file.length() > 0) {
-                    readyByIndex[item.optInt("index", i)] = item
+                    readyItems += item
                 }
             }
         }
 
         val queueItems = if (queue.isNotEmpty()) {
             queue.map { item ->
-                val cached = readyByIndex[item.index]
+                val cached = readyItems.firstOrNull { it.matchesQueueItem(item) }
                 PreviewItem(
                     index = item.index,
                     text = item.text,
@@ -909,7 +982,7 @@ object AudioCacheFactory {
                 )
             }
         } else {
-            readyByIndex.values.map { item ->
+            readyItems.map { item ->
                 PreviewItem(
                     index = item.optInt("index", 0),
                     text = item.optString("text", ""),
@@ -953,5 +1026,27 @@ object AudioCacheFactory {
         if (!exists()) return 0L
         if (isFile) return length()
         return listFiles()?.sumOf { it.sizeBytes() } ?: 0L
+    }
+
+    private fun Map<String, Any?>.firstString(vararg keys: String): String {
+        return keys.firstNotNullOfOrNull { key ->
+            this[key]?.toString()?.trim()?.takeIf { it.isNotBlank() }
+        }.orEmpty()
+    }
+
+    private fun Map<String, Any?>.firstFloat(default: Float, vararg keys: String): Float {
+        return keys.firstNotNullOfOrNull { key ->
+            this[key]?.toString()?.toFloatOrNull()?.takeIf { it > 0f }
+        } ?: default
+    }
+
+    private fun JSONObject.matchesQueueItem(item: QueueItem): Boolean {
+        return optString("textHash", "") == item.text.md5() &&
+            optString("tag", "") == item.tag &&
+            optString("voice", "") == item.voice &&
+            optString("emotion", "") == item.emotion &&
+            optDouble("speed", 1.0).toFloat() == item.speed &&
+            optDouble("pitch", 1.0).toFloat() == item.pitch &&
+            optDouble("volume", 1.0).toFloat() == item.volume
     }
 }
