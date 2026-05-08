@@ -13,8 +13,8 @@ import android.os.IBinder
 class LegadoBridgeKeepAliveService : Service() {
 
     companion object {
-        const val ACTION_START = "com.github.jing332.tts_server_android.action.LEGADO_BRIDGE_START"
-        const val ACTION_STOP = "com.github.jing332.tts_server_android.action.LEGADO_BRIDGE_STOP"
+        const val ACTION_START = "com.github.jing332.tts_server_android.jtts.action.LEGADO_BRIDGE_START"
+        const val ACTION_STOP = "com.github.jing332.tts_server_android.jtts.action.LEGADO_BRIDGE_STOP"
 
         private const val CHANNEL_ID = "legado_bridge_keep_alive"
         private const val NOTIFICATION_ID = 72110

@@ -129,7 +129,7 @@ android {
 
         db {
             dimension = "version"
-            applicationIdSuffix ".db"
+            applicationIdSuffix ".jtts"
         }
 
         dev {

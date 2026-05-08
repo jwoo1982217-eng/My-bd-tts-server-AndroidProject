@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <string name="app_name">DB·TTS Server</string>
-    <string name="app_name_dev">DB·TTS Server</string>
+    <string name="app_name">J.TTS Server</string>
+    <string name="app_name_dev">J.TTS Server</string>
     <string name="app_switch">Switch</string>
     <string name="help">Help</string>
     <string name="warning">Warning</string>
@@ -218,7 +218,7 @@
     <string name="as_standby">As standby</string>
     <string name="direct_play">Direct play</string>
     <string name="systts_direct_play_help">Help [direct play]</string>
-    <string name="systts_direct_play_help_msg">When the option is turned on, it will be directly streamed play by its TTS engine;\nWhen the option is turned off, the audio will be transferred through the DB·TTS, which will cause some performance loss (cache read and write), but for multi-voice situations, it can be reduced Initialization delay  when switching between voice.</string>
+    <string name="systts_direct_play_help_msg">When the option is turned on, it will be directly streamed play by its TTS engine;\nWhen the option is turned off, the audio will be transferred through the J.TTS, which will cause some performance loss (cache read and write), but for multi-voice situations, it can be reduced Initialization delay  when switching between voice.</string>
     <string name="systts_replace_please_on_switch">⚠️Master switch not turned on</string>
     <string name="md_checkbox_checked">Checked</string>
     <string name="md_checkbox_unchecked">Unchecked</string>
@@ -242,8 +242,8 @@
     <string name="app_language_to_follow_tip_msg">If change fail, Please restart application</string>
     <string name="forwarder_sys_fail_audio_file">Synthesis failed: The audio file was not found</string>
     <string name="systts_engine_init_failed_timeout">Engine initialization failed: Timed out</string>
-    <string name="forwarder_systts">DB·TTS转发器</string>
-    <string name="forwarder_sys_running">DB·TTS转发器运行中</string>
+    <string name="forwarder_systts">J.TTS转发器</string>
+    <string name="forwarder_sys_running">J.TTS转发器运行中</string>
     <string name="language">Language</string>
     <string name="plugin_manager">Plugin Manager</string>
     <string name="error">Error</string>
