@@ -1069,7 +1069,7 @@ object AudioCacheFactory {
             val record = base.optJSONObject(i) ?: continue
             val name = record.optString("name", "").trim()
             if (name.isBlank()) continue
-            byName[name] = JSONObject(record.toString())
+            byName[name] = JSONObject(record.toString()).also { normalizeRoleRecordForPlugin(it) }
         }
 
         queue
@@ -1082,7 +1082,8 @@ object AudioCacheFactory {
                     ?: old.optString("voice", "")
 
                 old.put("name", name)
-                if (!old.has("aliases")) old.put("aliases", JSONArray())
+                normalizeRoleRecordForPlugin(old)
+                if (!old.has("aliases")) old.put("aliases", "")
                 if (voice.isNotBlank()) old.put("voice", voice)
                 if (!old.has("gender")) old.put("gender", "")
                 if (!old.has("genderAge")) old.put("genderAge", old.optString("age", ""))
@@ -1096,6 +1097,19 @@ object AudioCacheFactory {
         val out = JSONArray()
         byName.values.forEach { out.put(it) }
         return out
+    }
+
+    private fun normalizeRoleRecordForPlugin(record: JSONObject) {
+        val aliases = record.opt("aliases")
+        if (aliases is JSONArray) {
+            val values = mutableListOf<String>()
+            for (i in 0 until aliases.length()) {
+                aliases.optString(i, "").trim().takeIf { it.isNotBlank() }?.let { values += it }
+            }
+            record.put("aliases", values.joinToString("|"))
+        } else if (!record.has("aliases") || record.isNull("aliases")) {
+            record.put("aliases", "")
+        }
     }
 
     private fun cacheRoot(context: Context): File {
