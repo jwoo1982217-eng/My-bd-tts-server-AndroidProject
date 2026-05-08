@@ -10,7 +10,7 @@ object SystemTtsForwarderConfig {
     val port = mutableDataSaverStateOf(
         dataSaverInterface = pref,
         key = "port",
-        initialValue = 1221
+        initialValue = 7120
     )
 
     val isWakeLockEnabled = mutableDataSaverStateOf(
