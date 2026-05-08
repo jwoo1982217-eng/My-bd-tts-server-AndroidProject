@@ -18,4 +18,10 @@ object SystemTtsForwarderConfig {
         key = "isWakeLockEnabled",
         initialValue = false
     )
+    
+    init {
+        if (port.value == 1221) {
+            port.value = 7120
+        }
+    }
 }

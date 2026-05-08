@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <string name="app_name">TTS Server</string>
-    <string name="app_name_dev">دی‌تی‌تی‌اس سرور</string>
+    <string name="app_name">DB·TTS</string>
+    <string name="app_name_dev">DB·TTS</string>
     <string name="app_switch">تعویض</string>
     <string name="help">کمک</string>
     <string name="warning">هشدار</string>
@@ -245,8 +245,8 @@
     <string name="app_language_to_follow_tip_msg">اگر به روز رسانی زبان انجام نشد، لطفاً برنامه را به صورت دستی پایان دهید و مجدداً راه اندازی کنید.</string>
     <string name="forwarder_sys_fail_audio_file">سنتز انجام نشد: فایل صوتی یافت نشد</string>
     <string name="systts_engine_init_failed_timeout">مقداردهی اولیه موتور ناموفق بود: زمان تمام شد</string>
-    <string name="forwarder_systts">موتور فرستنده سیستم  </string>
-    <string name="forwarder_sys_running">موتور فرستنده در حال اجرا است</string>
+    <string name="forwarder_systts">DB·TTS转发器</string>
+    <string name="forwarder_sys_running">DB·TTS转发器运行中</string>
     <string name="language">زبان</string>
     <string name="plugin_manager">مدیریت پلاگین</string>
     <string name="error">اشتباه</string>

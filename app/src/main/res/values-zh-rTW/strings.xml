@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <string name="app_name">TTS Server</string>
-    <string name="app_name_dev">D·TTS Server</string>
+    <string name="app_name">DB·TTS</string>
+    <string name="app_name_dev">DB·TTS</string>
     <string name="app_switch">開關</string>
     <string name="help">幫助</string>
     <string name="warning">警告</string>
@@ -208,7 +208,7 @@
     <string name="as_standby">作為備用</string>
     <string name="direct_play">直接播放</string>
     <string name="systts_direct_play_help">關於【直接播放】</string>
-    <string name="systts_direct_play_help_msg">打開選項後，將直接由其TTS引擎進行串流播放； \n關閉選項後，將會經TTS Server中轉音訊，這會有些效能損耗（緩存的讀寫），但對於多語音情况下，可降低同一引擎在聲音切換時帶來的初始化延遲。</string>
+    <string name="systts_direct_play_help_msg">打開選項後，將直接由其TTS引擎進行串流播放； \n關閉選項後，將會經DB·TTS中轉音訊，這會有些效能損耗（緩存的讀寫），但對於多語音情况下，可降低同一引擎在聲音切換時帶來的初始化延遲。</string>
     <string name="systts_replace_please_on_switch">⚠️ 右上角選單開啟【總開關】</string>
     <string name="md_checkbox_checked">已全選</string>
     <string name="md_checkbox_unchecked">全部未選</string>
@@ -231,8 +231,8 @@
     <string name="app_language_to_follow_tip_msg">如果更新語言失敗，請手動結束程式並重啓。</string>
     <string name="forwarder_sys_fail_audio_file">合成失敗：未找到音訊檔案</string>
     <string name="systts_engine_init_failed_timeout">引擎初始化失敗：已逾時</string>
-    <string name="forwarder_systts">TTS轉發器</string>
-    <string name="forwarder_sys_running">系統TTS轉發器運行中</string>
+    <string name="forwarder_systts">DB·TTS转发器</string>
+    <string name="forwarder_sys_running">DB·TTS转发器运行中</string>
     <string name="language">語言</string>
     <string name="plugin_manager">插件管理</string>
     <string name="error">錯誤</string>
