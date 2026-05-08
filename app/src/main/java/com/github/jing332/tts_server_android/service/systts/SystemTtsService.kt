@@ -105,6 +105,9 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
         const val DEFAULT_VOICE_NAME = "DEFAULT_默认"
         const val PARAM_BGM_ENABLED = "bgm_enabled"
 
+        @Volatile
+        private var currentManager: MixSynthesizer? = null
+
         /**
          * 更新配置
          */
@@ -113,6 +116,21 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
                 AppConst.localBroadcast.sendBroadcast(Intent(ACTION_UPDATE_REPLACER))
             else
                 AppConst.localBroadcast.sendBroadcast(Intent(ACTION_UPDATE_CONFIG))
+        }
+
+        fun retryReaderAudioCacheFailed(
+            context: Context,
+            bookKey: String,
+            chapterKey: String,
+            onFinished: ((Boolean) -> Unit)? = null,
+        ) {
+            AudioCacheFactory.retryFailedItems(
+                context = context.applicationContext,
+                bookKey = bookKey,
+                chapterKey = chapterKey,
+                liveManager = currentManager,
+                onFinished = onFinished
+            )
         }
     }
 
@@ -192,6 +210,7 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
             }
 
             mTtsManager!!.init()
+            currentManager = mTtsManager
         }
     }
 
@@ -206,6 +225,7 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
         mScope.launch(Dispatchers.Main) {
             mTtsManager?.destroy()
             mTtsManager = null
+            currentManager = null
             logger.debug { "destoryed" }
         }
         unregisterReceiver(mNotificationReceiver)

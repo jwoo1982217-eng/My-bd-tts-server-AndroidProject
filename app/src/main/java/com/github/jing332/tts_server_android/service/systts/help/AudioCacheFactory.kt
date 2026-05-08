@@ -47,6 +47,39 @@ object AudioCacheFactory {
         val index: Int,
     )
 
+    data class PreviewBook(
+        val bookKey: String,
+        val bookName: String,
+        val chapters: List<PreviewChapter>,
+        val sizeBytes: Long,
+    )
+
+    data class PreviewChapter(
+        val bookKey: String,
+        val chapterKey: String,
+        val chapterIndex: Int,
+        val title: String,
+        val status: String,
+        val items: List<PreviewItem>,
+        val readyCount: Int,
+        val failedCount: Int,
+        val sizeBytes: Long,
+        val updatedAt: Long,
+    )
+
+    data class PreviewItem(
+        val index: Int,
+        val text: String,
+        val tag: String,
+        val voice: String,
+        val status: String,
+        val emotion: String,
+        val speed: Float,
+        val pitch: Float,
+        val volume: Float,
+        val error: String,
+    )
+
     private data class QueueItem(
         val index: Int,
         val text: String,
@@ -167,6 +200,74 @@ object AudioCacheFactory {
         }
     }
 
+    fun listPreview(context: Context): List<PreviewBook> {
+        val root = cacheRoot(context)
+        if (!root.exists()) return emptyList()
+
+        return root.listFiles()
+            ?.filter { it.isDirectory }
+            ?.mapNotNull { bookDir ->
+                val chapters = bookDir.listFiles()
+                    ?.filter { it.isDirectory }
+                    ?.mapNotNull { chapterDir ->
+                        previewChapter(bookDir.name, chapterDir)
+                    }
+                    ?.sortedBy { it.chapterIndex }
+                    .orEmpty()
+
+                if (chapters.isEmpty()) return@mapNotNull null
+
+                PreviewBook(
+                    bookKey = bookDir.name,
+                    bookName = chapters.firstOrNull { it.title.isNotBlank() }
+                        ?.let { readManifest(chapterDir(context, bookDir.name, it.chapterKey)) }
+                        ?.optString("bookName", "")
+                        ?.takeIf { it.isNotBlank() }
+                        ?: chapters.firstOrNull()
+                            ?.let { readManifest(chapterDir(context, bookDir.name, it.chapterKey)) }
+                            ?.optString("bookName", "")
+                            .orEmpty()
+                            .ifBlank { bookDir.name },
+                    chapters = chapters,
+                    sizeBytes = bookDir.sizeBytes()
+                )
+            }
+            ?.sortedBy { it.bookName }
+            .orEmpty()
+    }
+
+    fun clearChapter(context: Context, bookKey: String, chapterKey: String): Boolean {
+        return chapterDir(context, bookKey, chapterKey).deleteRecursively()
+    }
+
+    fun clearAll(context: Context): Boolean {
+        return cacheRoot(context).deleteRecursively()
+    }
+
+    fun retryFailedItems(
+        context: Context,
+        bookKey: String,
+        chapterKey: String,
+        liveManager: MixSynthesizer?,
+        onFinished: ((Boolean) -> Unit)? = null,
+    ) {
+        if (liveManager == null) {
+            onFinished?.invoke(false)
+            return
+        }
+
+        scope.launch {
+            val ok = runCatching {
+                val manager = getBackgroundManager(context, liveManager)
+                retryFailedItemsInternal(context, manager, bookKey, chapterKey)
+            }.onFailure {
+                logger.warn(it) { "retry failed cache items failed" }
+            }.getOrDefault(false)
+
+            onFinished?.invoke(ok)
+        }
+    }
+
     fun cancelWarmup() {
         warmJob?.cancel()
         warmJob = null
@@ -226,6 +327,62 @@ object AudioCacheFactory {
         val latest = readManifest(dir) ?: manifest
         latest.put("status", "ready")
         writeManifest(dir, latest)
+    }
+
+    private suspend fun retryFailedItemsInternal(
+        context: Context,
+        manager: MixSynthesizer,
+        bookKey: String,
+        chapterKey: String,
+    ): Boolean {
+        val dir = chapterDir(context, bookKey, chapterKey)
+        val manifest = readManifest(dir) ?: return false
+        val queue = readQueue(dir)
+            .filter { it.raw.optString("status") == "failed" || it.raw.optString("error").isNotBlank() }
+
+        if (queue.isEmpty()) return true
+
+        manifest.put("status", "caching_audio")
+        writeManifest(dir, manifest)
+
+        queue.forEach { item ->
+            updateQueueItem(dir, item.index, "caching_audio")
+            val config = resolveTtsConfig(manager, item)
+            if (config == null) {
+                updateQueueItem(dir, item.index, "failed", "No matching TTS config")
+                return@forEach
+            }
+
+            val audio = synthesizeQueueItemToPcm(manager, item, config)
+            if (audio == null) {
+                updateQueueItem(dir, item.index, "failed", "TTS request failed")
+                return@forEach
+            }
+
+            val chapter = JSONObject()
+                .put("chapterIndex", manifest.optInt("chapterIndex", -1))
+                .put("chapterTitle", manifest.optString("chapterTitle", ""))
+                .put("textHash", manifest.optString("textHash", ""))
+
+            saveItem(
+                context = context,
+                bookKey = bookKey,
+                bookName = manifest.optString("bookName", ""),
+                chapter = chapter,
+                index = item.index,
+                text = item.text,
+                sampleRate = audio.first,
+                bytes = audio.second,
+                queueItem = item,
+                status = "caching_audio"
+            )
+            updateQueueItem(dir, item.index, "ready")
+        }
+
+        val latest = readManifest(dir) ?: manifest
+        latest.put("status", if (readQueue(dir).any { it.raw.optString("status") == "failed" }) "failed" else "ready")
+        writeManifest(dir, latest)
+        return true
     }
 
     private suspend fun synthesizeQueueItemToPcm(
@@ -494,6 +651,32 @@ object AudioCacheFactory {
         File(dir, "queue.json").writeText(arr.toString(2), Charsets.UTF_8)
     }
 
+    private fun readQueue(dir: File): List<QueueItem> {
+        val file = File(dir, "queue.json")
+        if (!file.exists()) return emptyList()
+
+        val arr = runCatching { JSONArray(file.readText(Charsets.UTF_8)) }.getOrNull()
+            ?: return emptyList()
+
+        return (0 until arr.length()).mapNotNull { i ->
+            val raw = arr.optJSONObject(i) ?: return@mapNotNull null
+            val text = raw.optString("text", "").trim()
+            if (text.isBlank()) return@mapNotNull null
+
+            QueueItem(
+                index = raw.optInt("index", i),
+                text = text,
+                tag = raw.optString("tag", ""),
+                voice = raw.optString("voice", ""),
+                emotion = raw.optString("emotion", ""),
+                speed = raw.optDouble("speed", 1.0).toFloat(),
+                pitch = raw.optDouble("pitch", 1.0).toFloat(),
+                volume = raw.optDouble("volume", 1.0).toFloat(),
+                raw = raw
+            )
+        }
+    }
+
     private fun updateQueueItem(dir: File, index: Int, status: String, error: String = "") {
         val file = File(dir, "queue.json")
         if (!file.exists()) return
@@ -505,6 +688,7 @@ object AudioCacheFactory {
             item.put("status", status)
             item.put("updatedAt", System.currentTimeMillis())
             if (error.isNotBlank()) item.put("error", error)
+            else item.remove("error")
             arr.put(i, item)
             break
         }
@@ -572,7 +756,12 @@ object AudioCacheFactory {
     }
 
     private fun chapterDir(context: Context, bookKey: String, chapterKey: String): File {
-        return File(context.getExternalFilesDir("reader_audio_cache"), "$bookKey/$chapterKey")
+        return File(cacheRoot(context), "$bookKey/$chapterKey")
+    }
+
+    private fun cacheRoot(context: Context): File {
+        return context.getExternalFilesDir("reader_audio_cache")
+            ?: File(context.filesDir, "reader_audio_cache")
     }
 
     private fun chapterKey(bookKey: String, chapterIndex: Int): String {
@@ -640,5 +829,86 @@ object AudioCacheFactory {
     private fun String.md5(): String {
         val digest = MessageDigest.getInstance("MD5").digest(toByteArray(Charsets.UTF_8))
         return digest.joinToString("") { "%02x".format(it) }
+    }
+
+    private fun previewChapter(bookKey: String, dir: File): PreviewChapter? {
+        val manifest = readManifest(dir)
+        val queue = readQueue(dir)
+        if (manifest == null && queue.isEmpty()) return null
+
+        val manifestItems = manifest?.optJSONArray("items")
+        val readyByIndex = mutableMapOf<Int, JSONObject>()
+        if (manifestItems != null) {
+            for (i in 0 until manifestItems.length()) {
+                val item = manifestItems.optJSONObject(i) ?: continue
+                val path = item.optString("path", "")
+                val file = File(path)
+                if (file.exists() && file.length() > 0) {
+                    readyByIndex[item.optInt("index", i)] = item
+                }
+            }
+        }
+
+        val queueItems = if (queue.isNotEmpty()) {
+            queue.map { item ->
+                val cached = readyByIndex[item.index]
+                PreviewItem(
+                    index = item.index,
+                    text = item.text,
+                    tag = item.tag,
+                    voice = item.voice,
+                    status = if (cached != null) "ready" else item.raw.optString("status", "pending"),
+                    emotion = item.emotion,
+                    speed = item.speed,
+                    pitch = item.pitch,
+                    volume = item.volume,
+                    error = item.raw.optString("error", "")
+                )
+            }
+        } else {
+            readyByIndex.values.map { item ->
+                PreviewItem(
+                    index = item.optInt("index", 0),
+                    text = item.optString("text", ""),
+                    tag = item.optString("tag", ""),
+                    voice = item.optString("voice", ""),
+                    status = item.optString("status", "ready"),
+                    emotion = item.optString("emotion", ""),
+                    speed = item.optDouble("speed", 1.0).toFloat(),
+                    pitch = item.optDouble("pitch", 1.0).toFloat(),
+                    volume = item.optDouble("volume", 1.0).toFloat(),
+                    error = item.optString("error", "")
+                )
+            }
+        }.sortedBy { it.index }
+
+        val readyCount = queueItems.count { it.status == "ready" }
+        val failedCount = queueItems.count { it.status == "failed" || it.error.isNotBlank() }
+
+        return PreviewChapter(
+            bookKey = bookKey,
+            chapterKey = dir.name,
+            chapterIndex = manifest?.optInt("chapterIndex", -1) ?: dir.name.substringAfterLast("_").toIntOrNull() ?: -1,
+            title = manifest?.optString("chapterTitle", "").orEmpty(),
+            status = manifest?.optString("status", "").orEmpty().ifBlank {
+                when {
+                    failedCount > 0 -> "failed"
+                    queueItems.isNotEmpty() && readyCount == queueItems.size -> "ready"
+                    queueItems.any { it.status == "caching_audio" } -> "caching_audio"
+                    else -> "pending"
+                }
+            },
+            items = queueItems,
+            readyCount = readyCount,
+            failedCount = failedCount,
+            sizeBytes = dir.sizeBytes(),
+            updatedAt = manifest?.optLong("updatedAt", 0L) ?: dir.lastModified(),
+        )
+    }
+
+    private fun File.sizeBytes(): Long {
+        if (!exists()) return 0L
+        if (isFile) return length()
+        return listFiles()?.sumOf { it.sizeBytes() } ?: 0L
     }
 }

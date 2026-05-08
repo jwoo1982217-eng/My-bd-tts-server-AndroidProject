@@ -59,6 +59,7 @@
     <string name="server_set_token">Set Token</string>
     <string name="server_token_set_to">Token is set to: </string>
     <string name="system_tts">System TTS</string>
+    <string name="script_preview">Script Preview</string>
     <string name="settings">Settings</string>
     <string name="global_settings">Global Settings</string>
     <string name="copy_address">copy address</string>

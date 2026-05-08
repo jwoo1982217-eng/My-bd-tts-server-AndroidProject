@@ -23,6 +23,7 @@ sealed class PagerDestination(
                 SystemTts,
                 SystemTtsLog,
                 SystemTtsForwarder,
+                ScriptPreview,
                 Settings
             )
         }
@@ -51,7 +52,14 @@ sealed class PagerDestination(
         )
     })
 
-    object Settings : PagerDestination(3, R.string.settings, {
+    object ScriptPreview : PagerDestination(3, R.string.script_preview, {
+        Icon(
+            Icons.AutoMirrored.Default.TextSnippet,
+            contentDescription = null
+        )
+    })
+
+    object Settings : PagerDestination(4, R.string.settings, {
         Icon(Icons.Default.Settings, null)
     })
 }
