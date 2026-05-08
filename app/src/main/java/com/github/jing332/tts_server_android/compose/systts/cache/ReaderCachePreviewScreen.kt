@@ -356,7 +356,7 @@ private fun PreviewTabs(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        PreviewTab.entries.forEach { tab ->
+        listOf(PreviewTab.Script, PreviewTab.RuleLog).forEach { tab ->
             AssistChip(
                 onClick = { onSelected(tab) },
                 label = { Text(tab.title) },
