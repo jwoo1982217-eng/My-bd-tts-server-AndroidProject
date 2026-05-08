@@ -268,6 +268,31 @@ object AudioCacheFactory {
         }
     }
 
+    fun retryItem(
+        context: Context,
+        bookKey: String,
+        chapterKey: String,
+        itemIndex: Int,
+        liveManager: MixSynthesizer?,
+        onFinished: ((Boolean) -> Unit)? = null,
+    ) {
+        if (liveManager == null) {
+            onFinished?.invoke(false)
+            return
+        }
+
+        scope.launch {
+            val ok = runCatching {
+                val manager = getBackgroundManager(context, liveManager)
+                retryItemsInternal(context, manager, bookKey, chapterKey, setOf(itemIndex))
+            }.onFailure {
+                logger.warn(it) { "retry cache item failed" }
+            }.getOrDefault(false)
+
+            onFinished?.invoke(ok)
+        }
+    }
+
     fun cancelWarmup() {
         warmJob?.cancel()
         warmJob = null
@@ -335,10 +360,28 @@ object AudioCacheFactory {
         bookKey: String,
         chapterKey: String,
     ): Boolean {
+        val failedIndexes = chapterDir(context, bookKey, chapterKey)
+            .let { readQueue(it) }
+            .filter { it.raw.optString("status") == "failed" || it.raw.optString("error").isNotBlank() }
+            .map { it.index }
+            .toSet()
+
+        if (failedIndexes.isEmpty()) return true
+
+        return retryItemsInternal(context, manager, bookKey, chapterKey, failedIndexes)
+    }
+
+    private suspend fun retryItemsInternal(
+        context: Context,
+        manager: MixSynthesizer,
+        bookKey: String,
+        chapterKey: String,
+        indexes: Set<Int>,
+    ): Boolean {
         val dir = chapterDir(context, bookKey, chapterKey)
         val manifest = readManifest(dir) ?: return false
         val queue = readQueue(dir)
-            .filter { it.raw.optString("status") == "failed" || it.raw.optString("error").isNotBlank() }
+            .filter { it.index in indexes }
 
         if (queue.isEmpty()) return true
 

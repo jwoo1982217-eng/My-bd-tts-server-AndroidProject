@@ -210,6 +210,20 @@ fun ReaderCachePreviewScreen() {
                                     reload()
                                 }
                             }
+                        },
+                        onRetryItem = { item ->
+                            context.toast("开始重试第 ${item.index} 句")
+                            SystemTtsService.retryReaderAudioCacheItem(
+                                context = context,
+                                bookKey = chapter.bookKey,
+                                chapterKey = chapter.chapterKey,
+                                itemIndex = item.index
+                            ) { ok ->
+                                scope.launch {
+                                    context.toast(if (ok) "单句重试完成" else "TTS 服务未运行，先朗读一次后再试")
+                                    reload()
+                                }
+                            }
                         }
                     )
                 }
@@ -225,6 +239,7 @@ private fun ChapterCard(
     onToggle: () -> Unit,
     onClear: () -> Unit,
     onRetry: () -> Unit,
+    onRetryItem: (AudioCacheFactory.PreviewItem) -> Unit,
 ) {
     ElevatedCard(
         modifier = Modifier.fillMaxWidth()
@@ -281,7 +296,10 @@ private fun ChapterCard(
             AnimatedVisibility(visible = expanded) {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     chapter.items.forEach { item ->
-                        QueueItemRow(item)
+                        QueueItemRow(
+                            item = item,
+                            onRetry = { onRetryItem(item) }
+                        )
                     }
                 }
             }
@@ -290,7 +308,10 @@ private fun ChapterCard(
 }
 
 @Composable
-private fun QueueItemRow(item: AudioCacheFactory.PreviewItem) {
+private fun QueueItemRow(
+    item: AudioCacheFactory.PreviewItem,
+    onRetry: () -> Unit,
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -318,12 +339,17 @@ private fun QueueItemRow(item: AudioCacheFactory.PreviewItem) {
             )
             Text(
                 text = item.voice.ifBlank { "默认音色" },
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(0.9f),
                 style = MaterialTheme.typography.labelMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
             StatusText(item.status)
+            if (item.status == "failed" || item.error.isNotBlank()) {
+                IconButton(onClick = onRetry) {
+                    Icon(Icons.Default.Refresh, contentDescription = "重试这一句")
+                }
+            }
         }
 
         Text(

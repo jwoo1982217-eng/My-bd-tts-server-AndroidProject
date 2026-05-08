@@ -132,6 +132,23 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
                 onFinished = onFinished
             )
         }
+
+        fun retryReaderAudioCacheItem(
+            context: Context,
+            bookKey: String,
+            chapterKey: String,
+            itemIndex: Int,
+            onFinished: ((Boolean) -> Unit)? = null,
+        ) {
+            AudioCacheFactory.retryItem(
+                context = context.applicationContext,
+                bookKey = bookKey,
+                chapterKey = chapterKey,
+                itemIndex = itemIndex,
+                liveManager = currentManager,
+                onFinished = onFinished
+            )
+        }
     }
 
     private val mCurrentLanguage: MutableList<String> = mutableListOf("zho", "CHN", "")
