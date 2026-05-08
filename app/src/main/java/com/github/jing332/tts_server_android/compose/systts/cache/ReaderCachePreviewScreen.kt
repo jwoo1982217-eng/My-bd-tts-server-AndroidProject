@@ -58,6 +58,7 @@ import com.github.jing332.tts_server_android.compose.nav.NavTopAppBar
 import com.github.jing332.tts_server_android.service.systts.SystemTtsService
 import com.github.jing332.tts_server_android.service.systts.help.AudioCacheFactory
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -95,6 +96,14 @@ fun ReaderCachePreviewScreen() {
     LaunchedEffect(Unit) {
         reload()
         reloadLogs()
+    }
+
+    LaunchedEffect(logDialog) {
+        while (true) {
+            delay(1500)
+            reload()
+            if (logDialog) reloadLogs()
+        }
     }
 
     if (clearAllDialog) {

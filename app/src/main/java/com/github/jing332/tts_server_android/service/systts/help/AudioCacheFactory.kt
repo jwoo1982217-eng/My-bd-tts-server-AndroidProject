@@ -193,7 +193,14 @@ object AudioCacheFactory {
                 cacheWorkMutex.withLock {
                     val manager = getBackgroundManager(context, liveManager)
                     val window = ReaderChapterBridgeClient.fetchChapterWindowJson()
-                    if (!window.optBoolean("ok", false)) return@withLock
+                    if (!window.optBoolean("ok", false)) {
+                        appendPreviewLog(
+                            context = context,
+                            source = "缓存队列",
+                            message = "窗口缓存未启动｜阅读端没有返回当前章窗口：${window.optString("error", "unknown")}"
+                        )
+                        return@withLock
+                    }
 
                     val bookKey = window.optString("bookUrl", window.optString("bookName", "")).md5()
                     val bookName = window.optString("bookName", "")

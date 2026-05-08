@@ -238,6 +238,7 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
     override fun onDestroy() {
         logger.debug { "service destroy" }
         super.onDestroy()
+        AudioCacheFactory.cancelWarmup()
 
         mScope.launch(Dispatchers.Main) {
             mTtsManager?.destroy()
@@ -331,7 +332,6 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
         logger.debug { getString(R.string.cancel) }
         synthesizerJob?.cancel()
         synthesizerJob = null
-        AudioCacheFactory.cancelWarmup()
         updateNotification(getString(R.string.systts_state_idle), "")
     }
 
@@ -455,6 +455,7 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
         startForegroundService()
         mCurrentText = text
         updateNotification(getString(R.string.systts_state_synthesizing), text)
+        AudioCacheFactory.warmCurrentWindow(applicationContext, mTtsManager)
 
         AudioCacheFactory.getCachedAudio(applicationContext, text)?.let { cached ->
             logger.debug { "reader audio cache hit: ${cached.chapterKey}#${cached.index}" }
