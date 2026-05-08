@@ -62,6 +62,7 @@ import com.github.jing332.tts_server_android.service.systts.SystemTtsService.Com
 import com.github.jing332.tts_server_android.service.systts.SystemTtsService.Companion.ACTION_UPDATE_REPLACER
 import com.github.jing332.tts_server_android.service.systts.SystemTtsService.Companion.NOTIFICATION_CHAN_ID
 import com.github.jing332.tts_server_android.UserTtsLogger
+import com.github.jing332.tts_server_android.service.systts.help.AudioCacheFactory
 import com.github.jing332.tts_server_android.service.systts.help.TextProcessor
 import com.github.michaelbull.result.Err
 import com.github.michaelbull.result.Ok
@@ -293,6 +294,7 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
         logger.debug { getString(R.string.cancel) }
         synthesizerJob?.cancel()
         synthesizerJob = null
+        AudioCacheFactory.cancelWarmup()
         updateNotification(getString(R.string.systts_state_idle), "")
     }
 
@@ -417,6 +419,21 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
         mCurrentText = text
         updateNotification(getString(R.string.systts_state_synthesizing), text)
 
+        AudioCacheFactory.getCachedAudio(applicationContext, text)?.let { cached ->
+            logger.debug { "reader audio cache hit: ${cached.chapterKey}#${cached.index}" }
+            if (safeStart(cached.sampleRate)) {
+                writeToCallBack(callback, cached.bytes)
+                safeDone()
+                AudioCacheFactory.warmCurrentWindow(applicationContext, mTtsManager)
+                mNotificationJob = mScope.launch {
+                    delay(5000)
+                    stopForeground(true)
+                    mNotificationDisplayed = false
+                }
+            }
+            return
+        }
+
         val enabledBgm = request.params.getBoolean(PARAM_BGM_ENABLED, true)
         mTtsManager?.context?.cfg?.bgmEnabled = { enabledBgm }
 
@@ -429,6 +446,8 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
 
             synthesizerJob = mScope.launch {
                 val manager = mTtsManager
+                val synthesizedAudio = java.io.ByteArrayOutputStream()
+                var synthesizedSampleRate = 16000
 
                 if (manager == null) {
                     safeError(TextToSpeech.ERROR_SYNTHESIS)
@@ -440,11 +459,13 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
                     forceConfigId = cfgId,
                     callback = object : com.github.jing332.tts.synthesizer.SynthesisCallback {
                         override fun onSynthesizeStart(sampleRate: Int) {
+                            if (sampleRate > 0) synthesizedSampleRate = sampleRate
                             safeStart(sampleRate)
                         }
 
                         override fun onSynthesizeAvailable(audio: ByteArray) {
                             if (audio.isEmpty()) return
+                            synthesizedAudio.write(audio)
 
                             if (!callbackStarted) {
                                 if (!safeStart(16000)) return
@@ -455,6 +476,13 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
                     }
                 ).onSuccess {
                     logger.debug { "done" }
+                    AudioCacheFactory.savePlaybackAudio(
+                        context = applicationContext,
+                        text = text,
+                        sampleRate = synthesizedSampleRate,
+                        bytes = synthesizedAudio.toByteArray()
+                    )
+                    AudioCacheFactory.warmCurrentWindow(applicationContext, manager)
                     safeDone()
                 }.onFailure {
                     when (it) {
@@ -491,7 +519,7 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
         try {
             val maxBufferSize: Int = callback.maxBufferSize
             var offset = 0
-            while (offset < pcmData.size && mTtsManager!!.isSynthesizing) {
+            while (offset < pcmData.size) {
                 val bytesToWrite = maxBufferSize.coerceAtMost(pcmData.size - offset)
                 callback.audioAvailable(pcmData, offset, bytesToWrite)
                 offset += bytesToWrite
