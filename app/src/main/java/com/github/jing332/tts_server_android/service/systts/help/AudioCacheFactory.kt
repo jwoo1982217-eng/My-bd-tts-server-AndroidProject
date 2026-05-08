@@ -692,6 +692,20 @@ object AudioCacheFactory {
             emptyList()
         }
 
+        appendPreviewLog(
+            context = context,
+            source = "朗读规则",
+            message = "规则队列原始返回｜${chapter.optInt("chapterIndex", -1)} ${chapter.optString("chapterTitle", "")}｜rawQueue=${rawQueue.size}"
+        )
+
+        rawQueue.take(5).forEachIndexed { i, raw ->
+            appendPreviewLog(
+                context = context,
+                source = "朗读规则",
+                message = "规则队列样本#$i｜keys=${raw.keys.joinToString(",")}｜raw=${raw.toString().take(500)}"
+            )
+        }
+
         val queue = rawQueue.mapIndexedNotNull { fallbackIndex, raw ->
             val text = raw.firstString("text", "content", "line", "sentence", "value", "台词", "内容")
             if (text.isBlank()) return@mapIndexedNotNull null
