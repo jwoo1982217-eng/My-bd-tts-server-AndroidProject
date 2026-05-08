@@ -27,6 +27,9 @@ import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.MessageDigest
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
 object AudioCacheFactory {
@@ -79,6 +82,12 @@ object AudioCacheFactory {
         val pitch: Float,
         val volume: Float,
         val error: String,
+    )
+
+    data class PreviewLog(
+        val time: String,
+        val source: String,
+        val message: String,
     )
 
     private data class QueueItem(
@@ -248,6 +257,57 @@ object AudioCacheFactory {
 
     fun clearAll(context: Context): Boolean {
         return cacheRoot(context).deleteRecursively()
+    }
+
+    fun appendPreviewLog(context: Context, source: String, message: String) {
+        runCatching {
+            val file = previewLogFile(context)
+            if (!file.parentFile.exists()) file.parentFile.mkdirs()
+
+            val time = SimpleDateFormat(
+                "yyyy-MM-dd HH:mm:ss.SSS",
+                Locale.getDefault()
+            ).format(Date())
+
+            val safeSource = source.replace("|", "/").trim().ifBlank { "缓存工厂" }
+            val safeMessage = message
+                .replace("\n", " ")
+                .replace("\r", " ")
+                .trim()
+
+            file.appendText("$time | $safeSource | $safeMessage\n", Charsets.UTF_8)
+            trimPreviewLogFile(file)
+        }.onFailure {
+            logger.warn(it) { "append preview log failed" }
+        }
+    }
+
+    fun listPreviewLogs(context: Context, limit: Int = 200): List<PreviewLog> {
+        return runCatching {
+            val file = previewLogFile(context)
+            if (!file.exists()) return emptyList()
+
+            file.readLines(Charsets.UTF_8)
+                .takeLast(limit)
+                .mapNotNull { line ->
+                    val parts = line.split(" | ", limit = 3)
+                    if (parts.size != 3) return@mapNotNull null
+                    PreviewLog(
+                        time = parts[0],
+                        source = parts[1],
+                        message = parts[2]
+                    )
+                }
+        }.getOrDefault(emptyList())
+    }
+
+    fun clearPreviewLogs(context: Context): Boolean {
+        return runCatching {
+            val file = previewLogFile(context)
+            if (!file.parentFile.exists()) file.parentFile.mkdirs()
+            file.writeText("", Charsets.UTF_8)
+            true
+        }.getOrDefault(false)
     }
 
     fun retryFailedItems(
@@ -885,6 +945,18 @@ object AudioCacheFactory {
     private fun cacheRoot(context: Context): File {
         return context.getExternalFilesDir("reader_audio_cache")
             ?: File(context.filesDir, "reader_audio_cache")
+    }
+
+    private fun previewLogFile(context: Context): File {
+        return File(cacheRoot(context), "cache_factory.log")
+    }
+
+    private fun trimPreviewLogFile(file: File) {
+        if (!file.exists()) return
+        if (file.length() <= 1024 * 1024L) return
+
+        val keepLines = file.readLines(Charsets.UTF_8).takeLast(2000)
+        file.writeText(keepLines.joinToString(separator = "\n", postfix = "\n"), Charsets.UTF_8)
     }
 
     private fun chapterKey(bookKey: String, chapterIndex: Int): String {

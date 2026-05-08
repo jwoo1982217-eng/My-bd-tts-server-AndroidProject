@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -68,8 +69,10 @@ fun ReaderCachePreviewScreen() {
     val expanded = remember { mutableStateMapOf<String, Boolean>() }
 
     var books by remember { mutableStateOf<List<AudioCacheFactory.PreviewBook>>(emptyList()) }
+    var previewLogs by remember { mutableStateOf<List<AudioCacheFactory.PreviewLog>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
     var clearAllDialog by remember { mutableStateOf(false) }
+    var logDialog by remember { mutableStateOf(false) }
 
     fun reload() {
         scope.launch {
@@ -81,8 +84,17 @@ fun ReaderCachePreviewScreen() {
         }
     }
 
+    fun reloadLogs() {
+        scope.launch {
+            previewLogs = withContext(Dispatchers.IO) {
+                AudioCacheFactory.listPreviewLogs(context)
+            }
+        }
+    }
+
     LaunchedEffect(Unit) {
         reload()
+        reloadLogs()
     }
 
     if (clearAllDialog) {
@@ -114,6 +126,65 @@ fun ReaderCachePreviewScreen() {
         )
     }
 
+    if (logDialog) {
+        AlertDialog(
+            onDismissRequest = { logDialog = false },
+            confirmButton = {
+                TextButton(onClick = { logDialog = false }) {
+                    Text(stringResource(R.string.close))
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    enabled = previewLogs.isNotEmpty(),
+                    onClick = {
+                        scope.launch(Dispatchers.IO) {
+                            AudioCacheFactory.clearPreviewLogs(context)
+                            withContext(Dispatchers.Main) {
+                                context.toast("台词本日志已清空")
+                                reloadLogs()
+                            }
+                        }
+                    }
+                ) {
+                    Text(stringResource(R.string.delete))
+                }
+            },
+            title = { Text("台词本日志") },
+            text = {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 420.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (previewLogs.isEmpty()) {
+                        item {
+                            Text(
+                                text = "暂无朗读规则或插件日志。",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    } else {
+                        items(previewLogs) { log ->
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(
+                                    text = "${log.time} · ${log.source}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = log.message,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        )
+    }
+
     val scrollBehaviour = TopAppBarDefaults.pinnedScrollBehavior()
     Scaffold(
         contentWindowInsets = WindowInsets(0),
@@ -123,6 +194,14 @@ fun ReaderCachePreviewScreen() {
                 title = { Text(stringResource(R.string.script_preview)) },
                 scrollBehavior = scrollBehaviour,
                 actions = {
+                    TextButton(
+                        onClick = {
+                            reloadLogs()
+                            logDialog = true
+                        }
+                    ) {
+                        Text("日志")
+                    }
                     IconButton(onClick = { reload() }) {
                         Icon(Icons.Default.Refresh, contentDescription = "刷新")
                     }

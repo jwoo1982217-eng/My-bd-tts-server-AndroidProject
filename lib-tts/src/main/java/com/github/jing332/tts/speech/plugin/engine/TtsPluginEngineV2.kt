@@ -73,17 +73,22 @@ open class TtsPluginEngineV2(val context: Context, var plugin: Plugin) {
 
     private fun appendPluginLog(context: Context, message: String) {
         runCatching {
-            val dir = context.getExternalFilesDir("log") ?: return
+            val dir = context.getExternalFilesDir("reader_audio_cache") ?: return
             if (!dir.exists()) dir.mkdirs()
 
-            val file = File(dir, "system_tts.log")
+            val file = File(dir, "cache_factory.log")
             val time = SimpleDateFormat(
                 "yyyy-MM-dd HH:mm:ss.SSS",
                 Locale.getDefault()
             ).format(Date())
 
+            val safeMessage = message
+                .replace("\n", " ")
+                .replace("\r", " ")
+                .trim()
+
             file.appendText(
-                "$time I\n[Plugin] $message\n",
+                "$time | 插件 | $safeMessage\n",
                 Charsets.UTF_8
             )
         }

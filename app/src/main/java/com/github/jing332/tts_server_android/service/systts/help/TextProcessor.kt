@@ -18,10 +18,6 @@ import com.github.michaelbull.result.Ok
 import com.github.michaelbull.result.Result
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import kotlin.random.Random
 
 class TextProcessor : ITextProcessor {
@@ -44,43 +40,8 @@ class TextProcessor : ITextProcessor {
     private var lastModuleCtxJson: String = ""
     private val random by lazy { Random(System.currentTimeMillis()) }
 
-    private fun trimSystemTtsLogIfNeeded(file: File) {
-        val maxBytes = 10L * 1024L * 1024L
-        val keepBytes = 5 * 1024 * 1024
-
-        runCatching {
-            if (!file.exists()) return
-            if (file.length() <= maxBytes) return
-
-            val bytes = file.readBytes()
-            val keep = bytes.takeLast(keepBytes).toByteArray()
-
-            file.writeText(
-                "---- 日志过大，已自动裁剪，只保留最近约 5MB ----\n",
-                Charsets.UTF_8
-            )
-            file.appendBytes(keep)
-        }
-    }
-
     private fun appendSpeechRuleLog(context: Context, message: String) {
-        runCatching {
-            val dir = context.getExternalFilesDir("log") ?: return
-            if (!dir.exists()) dir.mkdirs()
-
-            val file = File(dir, "system_tts.log")
-            val time = SimpleDateFormat(
-                "yyyy-MM-dd HH:mm:ss.SSS",
-                Locale.getDefault()
-            ).format(Date())
-
-            file.appendText(
-                "$time I\n[SpeechRule] $message\n",
-                Charsets.UTF_8
-            )
-
-            trimSystemTtsLogIfNeeded(file)
-        }
+        AudioCacheFactory.appendPreviewLog(context, "朗读规则", message)
     }
 
     private fun normalizeSpeechRuleLookupId(ruleId: String): String {
