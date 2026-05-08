@@ -378,6 +378,8 @@ object AudioCacheFactory {
         val configFingerprint = currentConfigFingerprint()
         val queue = prepareQueue(context, bookName, chapter)
 
+        syncRoleManagerBookFiles(context, bookName, bookKey, chapter, queue)
+
         if (queue.isEmpty()) {
             manifest.put("status", "failed")
             manifest.put("error", "朗读规则没有生成台词本队列")
@@ -959,6 +961,141 @@ object AudioCacheFactory {
 
     private fun chapterDir(context: Context, bookKey: String, chapterKey: String): File {
         return File(cacheRoot(context), "$bookKey/$chapterKey")
+    }
+
+    private fun roleManagerDir(context: Context): File {
+        val root = context.getExternalFilesDir(null) ?: context.filesDir
+        return File(root, "plugins/mingwuyan")
+    }
+
+    private fun safeRoleBookName(bookName: String): String {
+        return bookName
+            .trim()
+            .ifBlank { "默认" }
+            .replace(Regex("""[\\/:*?"<>|\n\r\t]"""), "_")
+            .replace(Regex("""^\.+"""), "")
+            .ifBlank { "默认" }
+    }
+
+    private fun syncRoleManagerBookFiles(
+        context: Context,
+        bookName: String,
+        bookKey: String,
+        chapter: JSONObject,
+        queue: List<QueueItem>,
+    ) {
+        runCatching {
+            val safeBookName = safeRoleBookName(bookName)
+            val dir = roleManagerDir(context)
+            if (!dir.exists()) dir.mkdirs()
+
+            val bookFile = File(dir, "shuming.$safeBookName.json")
+            val existingBookRecords = readRoleRecords(bookFile)
+            val globalRecords = readRoleRecords(File(dir, "characterRecords.json"))
+            val mergedRecords = mergeRoleRecords(
+                base = if (existingBookRecords.length() > 0) existingBookRecords else globalRecords,
+                queue = queue
+            )
+
+            writeRoleBookList(dir, safeBookName)
+            File(dir, "cunfang.txt").writeText(safeBookName, Charsets.UTF_8)
+
+            if (mergedRecords.length() > 0) {
+                val text = mergedRecords.toString(2)
+                bookFile.writeText(text, Charsets.UTF_8)
+                File(dir, "characterRecords.json").writeText(text, Charsets.UTF_8)
+                File(dir, "gengxin.json").writeText(text, Charsets.UTF_8)
+            } else if (!bookFile.exists()) {
+                bookFile.writeText("[]", Charsets.UTF_8)
+            }
+
+            File(dir, "gengxin_meta.json").writeText(
+                JSONObject()
+                    .put("bookKey", bookKey)
+                    .put("bookName", safeBookName)
+                    .put("chapterKey", chapterKey(bookKey, chapter.optInt("chapterIndex", -1)))
+                    .put("chapterTitle", chapter.optString("chapterTitle", ""))
+                    .put("reason", "ttsCacheFactory")
+                    .put("rolesCount", mergedRecords.length())
+                    .put("updatedAt", System.currentTimeMillis())
+                    .toString(2),
+                Charsets.UTF_8
+            )
+
+            appendPreviewLog(
+                context = context,
+                source = "角色管理同步",
+                message = "书=$safeBookName｜角色=${mergedRecords.length()}｜章节=${chapter.optString("chapterTitle", "")}"
+            )
+        }.onFailure {
+            logger.warn(it) { "sync role manager book files failed" }
+            appendPreviewLog(
+                context = context,
+                source = "角色管理同步",
+                message = "同步失败：${it.message.orEmpty()}"
+            )
+        }
+    }
+
+    private fun readRoleRecords(file: File): JSONArray {
+        return runCatching {
+            if (!file.exists()) return JSONArray()
+            val text = file.readText(Charsets.UTF_8).trim()
+            if (text.startsWith("[")) JSONArray(text) else JSONArray()
+        }.getOrDefault(JSONArray())
+    }
+
+    private fun writeRoleBookList(dir: File, bookName: String) {
+        val file = File(dir, "liebiao.json")
+        val list = runCatching {
+            if (file.exists()) JSONArray(file.readText(Charsets.UTF_8)) else JSONArray()
+        }.getOrDefault(JSONArray())
+
+        val names = linkedSetOf("默认")
+        for (i in 0 until list.length()) {
+            list.optString(i, "").trim().takeIf { it.isNotBlank() }?.let { names += it }
+        }
+        names += bookName
+
+        val out = JSONArray()
+        names.forEach { out.put(it) }
+        file.writeText(out.toString(2), Charsets.UTF_8)
+    }
+
+    private fun mergeRoleRecords(base: JSONArray, queue: List<QueueItem>): JSONArray {
+        val byName = linkedMapOf<String, JSONObject>()
+
+        for (i in 0 until base.length()) {
+            val record = base.optJSONObject(i) ?: continue
+            val name = record.optString("name", "").trim()
+            if (name.isBlank()) continue
+            byName[name] = JSONObject(record.toString())
+        }
+
+        queue
+            .filter { it.tag.isNotBlank() }
+            .filterNot { it.tag == "旁白" || it.tag == "narration" || it.tag == "未知发言人" }
+            .groupBy { it.tag }
+            .forEach { (name, items) ->
+                val old = byName[name] ?: JSONObject().put("name", name)
+                val voice = items.firstNotNullOfOrNull { it.voice.takeIf(String::isNotBlank) }
+                    ?: old.optString("voice", "")
+
+                old.put("name", name)
+                if (!old.has("aliases")) old.put("aliases", JSONArray())
+                if (voice.isNotBlank()) old.put("voice", voice)
+                if (!old.has("gender")) old.put("gender", "")
+                if (!old.has("genderAge")) old.put("genderAge", old.optString("age", ""))
+                if (!old.has("age")) old.put("age", old.optString("genderAge", ""))
+                old.put("usageCount", old.optInt("usageCount", 0) + items.size)
+                if (!old.has("genderAgeHistory")) old.put("genderAgeHistory", JSONArray())
+
+                byName[name] = old
+            }
+
+        val out = JSONArray()
+        byName.values.forEach { out.put(it) }
+        return out
     }
 
     private fun cacheRoot(context: Context): File {
