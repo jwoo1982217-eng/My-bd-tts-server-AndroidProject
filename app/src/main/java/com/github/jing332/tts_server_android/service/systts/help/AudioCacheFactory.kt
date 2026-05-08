@@ -105,6 +105,13 @@ object AudioCacheFactory {
         val raw: JSONObject,
     )
 
+    private data class LegacyQueueSource(
+        val text: String,
+        val tag: String,
+        val voice: String,
+        val configId: Long,
+    )
+
     fun getCachedAudio(context: Context, text: String): CachedAudio? {
         val cleanText = text.trim()
         if (cleanText.isBlank()) return null
@@ -419,7 +426,7 @@ object AudioCacheFactory {
         manifest.put("updatedAt", System.currentTimeMillis())
         writeManifest(dir, manifest)
 
-        val queue = prepareQueue(context, bookName, chapter).sortedBy { it.index }
+        val queue = prepareQueue(context, manager, bookName, chapter).sortedBy { it.index }
 
         syncRoleManagerBookFiles(context, bookName, bookKey, chapter, queue)
 
@@ -654,6 +661,7 @@ object AudioCacheFactory {
 
     private fun prepareQueue(
         context: Context,
+        manager: MixSynthesizer,
         bookName: String,
         chapter: JSONObject,
     ): List<QueueItem> {
@@ -742,10 +750,19 @@ object AudioCacheFactory {
 
         if (queue.isNotEmpty()) return queue.sortedBy { it.index }
         if (rule != null) {
+            val legacyQueue = prepareLegacyRuleQueue(
+                context = context,
+                manager = manager,
+                rule = rule,
+                chapterText = chapterText,
+                chapter = chapter
+            )
+            if (legacyQueue.isNotEmpty()) return legacyQueue
+
             appendPreviewLog(
                 context = context,
                 source = "朗读规则",
-                message = "${chapter.optInt("chapterIndex", -1)} ${chapter.optString("chapterTitle", "")} 没有返回有效 audioQueue，台词本不再自动兜底成旁白。"
+                message = "${chapter.optInt("chapterIndex", -1)} ${chapter.optString("chapterTitle", "")} 未生成有效台词本队列，已停止本章缓存。"
             )
             return emptyList()
         }
@@ -768,9 +785,116 @@ object AudioCacheFactory {
         }
     }
 
+    private fun prepareLegacyRuleQueue(
+        context: Context,
+        manager: MixSynthesizer,
+        rule: SpeechRule,
+        chapterText: String,
+        chapter: JSONObject,
+    ): List<QueueItem> {
+        val configs = runCatching {
+            manager.repo.getAllTts().map { (id, config) ->
+                config.copy(speechInfo = config.speechInfo.copy(configId = id))
+            }
+        }.getOrDefault(emptyList())
+
+        if (configs.isEmpty()) return emptyList()
+
+        val fragments = runCatching {
+            SpeechRuleEngine(context, rule).apply { eval() }
+                .handleText(
+                    text = chapterText,
+                    list = configs.map { it.speechInfo },
+                    ctxJson = JSONObject()
+                        .put("chapterIndex", chapter.optInt("chapterIndex", -1))
+                        .put("chapterTitle", chapter.optString("chapterTitle", ""))
+                        .put("text", chapterText)
+                        .toString()
+                )
+        }.onFailure {
+            logger.warn(it) { "legacy handleText queue failed" }
+            appendPreviewLog(
+                context = context,
+                source = "朗读规则",
+                message = "旧规则兼容失败｜${chapter.optInt("chapterIndex", -1)} ${chapter.optString("chapterTitle", "")}｜${it.message.orEmpty()}"
+            )
+        }.getOrDefault(emptyList())
+
+        val sourceItems = if (fragments.isNotEmpty()) {
+            fragments.flatMap { fragment ->
+                val config = configs.firstOrNull {
+                    !it.speechInfo.isStandby &&
+                        it.speechInfo.tag == fragment.tag &&
+                        it.speechInfo.configId == fragment.id
+                } ?: configs.firstOrNull {
+                    !it.speechInfo.isStandby && it.speechInfo.tag == fragment.tag
+                } ?: configs.firstOrNull()
+
+                splitSentences(fragment.text).map { sentence ->
+                    LegacyQueueSource(
+                        text = sentence,
+                        tag = fragment.tag,
+                        voice = config?.source?.voice.orEmpty(),
+                        configId = fragment.id
+                    )
+                }
+            }
+        } else {
+            splitSentences(chapterText).map { sentence ->
+                LegacyQueueSource(
+                    text = sentence,
+                    tag = "",
+                    voice = configs.firstOrNull()?.source?.voice.orEmpty(),
+                    configId = 0L
+                )
+            }
+        }
+
+        val queue = sourceItems
+            .filter { it.text.isNotBlank() }
+            .mapIndexed { index, source ->
+                QueueItem(
+                    index = index,
+                    text = source.text,
+                    tag = source.tag,
+                    voice = source.voice,
+                    emotion = "",
+                    speed = 1f,
+                    pitch = 1f,
+                    volume = 1f,
+                    raw = JSONObject()
+                        .put("index", index)
+                        .put("text", source.text)
+                        .put("tag", source.tag)
+                        .put("voice", source.voice)
+                        .put("legacyConfigId", source.configId)
+                        .put("queueMode", if (fragments.isNotEmpty()) "legacy_handleText" else "legacy_sentence")
+                        .put("status", "pending")
+                )
+            }
+
+        if (queue.isNotEmpty()) {
+            appendPreviewLog(
+                context = context,
+                source = "朗读规则",
+                message = "旧规则兼容模式｜${chapter.optInt("chapterIndex", -1)} ${chapter.optString("chapterTitle", "")}｜生成 ${queue.size} 句台词本"
+            )
+        }
+
+        return queue
+    }
+
     private fun resolveTtsConfig(manager: MixSynthesizer, item: QueueItem): TtsConfiguration? {
-        val configs = runCatching { manager.repo.getAllTts().values.toList() }.getOrDefault(emptyList())
+        val configs = runCatching {
+            manager.repo.getAllTts().map { (id, config) ->
+                config.copy(speechInfo = config.speechInfo.copy(configId = id))
+            }
+        }.getOrDefault(emptyList())
         if (configs.isEmpty()) return null
+
+        val byLegacyId = item.raw.optLong("legacyConfigId", 0L).takeIf { it > 0L }?.let { id ->
+            configs.firstOrNull { it.speechInfo.configId == id }
+        }
 
         val byVoice = item.voice.takeIf { it.isNotBlank() }?.let { voice ->
             configs.firstOrNull {
@@ -788,7 +912,7 @@ object AudioCacheFactory {
             }
         }
 
-        val base = byVoice ?: byTag ?: configs.firstOrNull()
+        val base = byLegacyId ?: byVoice ?: byTag ?: configs.firstOrNull()
         return base?.copy(
             audioParams = AudioParams(
                 speed = item.speed.takeIf { it > 0f } ?: base.audioParams.speed,
