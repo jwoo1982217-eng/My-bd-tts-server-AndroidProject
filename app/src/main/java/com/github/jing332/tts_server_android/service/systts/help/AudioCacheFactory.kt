@@ -2,6 +2,9 @@ package com.github.jing332.tts_server_android.service.systts.help
 
 import android.content.Context
 import com.github.jing332.common.utils.StringUtils
+import com.github.jing332.database.dbm
+import com.github.jing332.database.entities.systts.TtsConfigurationDTO
+import com.github.jing332.database.entities.systts.source.PluginTtsSource
 import com.github.jing332.tts.MixSynthesizer
 import com.github.jing332.tts.SynthesizerContext
 import com.github.jing332.tts.synthesizer.SystemParams
@@ -48,6 +51,7 @@ object AudioCacheFactory {
         val bookKey = window.optString("bookUrl", window.optString("bookName", "")).md5()
         val chapters = window.optJSONArray("chapters") ?: return null
         val textHash = cleanText.md5()
+        val configFingerprint = currentConfigFingerprint()
 
         for (i in 0 until chapters.length()) {
             val chapter = chapters.optJSONObject(i) ?: continue
@@ -58,6 +62,7 @@ object AudioCacheFactory {
             for (j in 0 until items.length()) {
                 val item = items.optJSONObject(j) ?: continue
                 if (item.optString("textHash") != textHash) continue
+                if (item.optString("configFingerprint") != configFingerprint) continue
 
                 val file = File(item.optString("path", ""))
                 if (!file.exists() || file.length() <= 0) continue
@@ -161,14 +166,16 @@ object AudioCacheFactory {
         val sentences = splitSentences(text)
         if (sentences.isEmpty()) return
 
-        val chapterKey = chapterKey(bookKey, chapter.optInt("chapterIndex", -1))
-        val dir = chapterDir(context, bookKey, chapterKey)
+            val chapterKey = chapterKey(bookKey, chapter.optInt("chapterIndex", -1))
+            val dir = chapterDir(context, bookKey, chapterKey)
         val manifest = readManifest(dir) ?: newManifest(bookName, chapter, chapterKey)
+        val configFingerprint = currentConfigFingerprint()
         manifest.put("status", "caching_audio")
+        manifest.put("configFingerprint", configFingerprint)
         writeManifest(dir, manifest)
 
         for ((index, sentence) in sentences.withIndex()) {
-            if (hasItem(manifest, index, sentence)) continue
+            if (hasItem(manifest, index, sentence, configFingerprint)) continue
 
             val audio = synthesizeToPcm(manager, sentence) ?: continue
             saveItem(
@@ -280,7 +287,8 @@ object AudioCacheFactory {
         val dir = chapterDir(context, bookKey, chapterKey)
         if (!dir.exists()) dir.mkdirs()
 
-        val audioFile = File(dir, "${index}_${text.md5()}.pcm")
+        val configFingerprint = currentConfigFingerprint()
+        val audioFile = File(dir, "${index}_${text.md5()}_${configFingerprint.take(12)}.pcm")
         audioFile.writeBytes(bytes)
 
         val manifest = readManifest(dir) ?: newManifest(bookName, chapter, chapterKey)
@@ -291,12 +299,14 @@ object AudioCacheFactory {
                 .put("index", index)
                 .put("text", text)
                 .put("textHash", text.md5())
+                .put("configFingerprint", configFingerprint)
                 .put("sampleRate", sampleRate.coerceAtLeast(8000))
                 .put("path", audioFile.absolutePath)
                 .put("status", "ready")
                 .put("updatedAt", System.currentTimeMillis())
         )
         manifest.put("bookName", bookName)
+        manifest.put("configFingerprint", configFingerprint)
         manifest.put("status", status)
         manifest.put("updatedAt", System.currentTimeMillis())
         writeManifest(dir, manifest)
@@ -305,9 +315,13 @@ object AudioCacheFactory {
     private fun upsertItem(items: JSONArray, item: JSONObject) {
         val index = item.optInt("index", -1)
         val textHash = item.optString("textHash", "")
+        val configFingerprint = item.optString("configFingerprint", "")
         for (i in 0 until items.length()) {
             val old = items.optJSONObject(i) ?: continue
-            if (old.optInt("index", -2) == index || old.optString("textHash") == textHash) {
+            val sameIndex = old.optInt("index", -2) == index
+            val sameText = old.optString("textHash") == textHash
+            val sameConfig = old.optString("configFingerprint") == configFingerprint
+            if ((sameIndex || sameText) && sameConfig) {
                 items.put(i, item)
                 return
             }
@@ -315,12 +329,18 @@ object AudioCacheFactory {
         items.put(item)
     }
 
-    private fun hasItem(manifest: JSONObject, index: Int, text: String): Boolean {
+    private fun hasItem(
+        manifest: JSONObject,
+        index: Int,
+        text: String,
+        configFingerprint: String,
+    ): Boolean {
         val items = manifest.optJSONArray("items") ?: return false
         val textHash = text.md5()
         for (i in 0 until items.length()) {
             val item = items.optJSONObject(i) ?: continue
             if (item.optInt("index", -1) != index && item.optString("textHash") != textHash) continue
+            if (item.optString("configFingerprint") != configFingerprint) continue
             val file = File(item.optString("path", ""))
             return file.exists() && file.length() > 0
         }
@@ -335,6 +355,7 @@ object AudioCacheFactory {
             .put("chapterIndex", chapter.optInt("chapterIndex", -1))
             .put("chapterTitle", chapter.optString("chapterTitle", ""))
             .put("textHash", chapter.optString("textHash", chapter.optString("text", "").md5()))
+            .put("configFingerprint", currentConfigFingerprint())
             .put("items", JSONArray())
             .put("createdAt", System.currentTimeMillis())
             .put("updatedAt", System.currentTimeMillis())
@@ -364,6 +385,57 @@ object AudioCacheFactory {
             .map { it.trim() }
             .filter { it.any { ch -> ch.isLetterOrDigit() } }
             .distinct()
+    }
+
+    private fun currentConfigFingerprint(): String {
+        return runCatching {
+            val groups = dbm.systemTtsV2.getAllGroupWithTts()
+            val plugins = dbm.pluginDao.all.associate { it.pluginId to it.userVars.toString() }
+
+            buildString {
+                append("global:")
+                append(SysTtsConfig.audioParamsSpeed)
+                append('|')
+                append(SysTtsConfig.audioParamsPitch)
+                append('|')
+                append(SysTtsConfig.audioParamsVolume)
+                append('|')
+                append(SysTtsConfig.isSkipSilentAudio)
+                append(';')
+
+                groups.forEach { group ->
+                    append("group:")
+                    append(group.group.id)
+                    append(':')
+                    append(group.group.audioParams)
+                    append(';')
+
+                    group.list
+                        .filter { it.isEnabled }
+                        .sortedBy { it.id }
+                        .forEach { tts ->
+                            append("tts:")
+                            append(tts.id)
+                            append(':')
+                            append(tts.groupId)
+                            append(':')
+                            append(tts.order)
+                            append(':')
+                            append(tts.displayName)
+                            append(':')
+                            append(tts.config)
+
+                            val source = (tts.config as? TtsConfigurationDTO)?.source
+                            val pluginId = (source as? PluginTtsSource)?.pluginId.orEmpty()
+                            append(':')
+                            append(pluginId)
+                            append(':')
+                            append(plugins[pluginId].orEmpty())
+                            append(';')
+                        }
+                }
+            }.md5()
+        }.getOrDefault("unknown")
     }
 
     private fun String.md5(): String {
