@@ -66,11 +66,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private enum class PreviewTab(val title: String) {
-    Script("台词本"),
-    ReadLog("实际朗读"),
-    RuleLog("朗读规则"),
-    PluginLog("插件日志"),
-    CacheLog("缓存队列")
+    Script("预缓存队列"),
+    RuleLog("朗读规则运行"),
+    CacheLog("预缓存日志"),
+    ReadLog("实际朗读")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -150,11 +149,8 @@ fun ReaderCachePreviewScreen(
 
     val scrollBehaviour = TopAppBarDefaults.pinnedScrollBehavior()
     val visibleLogs = when (selectedTab) {
-        PreviewTab.RuleLog -> previewLogs.filter { it.source == "朗读规则" }
+        PreviewTab.RuleLog -> previewLogs.filter { it.source != "缓存队列" }
         PreviewTab.CacheLog -> previewLogs.filter { it.source == "缓存队列" }
-        PreviewTab.PluginLog -> previewLogs.filter {
-            it.source != "朗读规则" && it.source != "缓存队列"
-        }
         PreviewTab.Script, PreviewTab.ReadLog -> emptyList()
     }
 
@@ -163,7 +159,7 @@ fun ReaderCachePreviewScreen(
         modifier = Modifier.nestedScroll(scrollBehaviour.nestedScrollConnection),
         topBar = {
             NavTopAppBar(
-                title = { Text(stringResource(R.string.script_preview)) },
+                title = { Text("朗读缓存中心") },
                 scrollBehavior = scrollBehaviour,
                 actions = {
                     if (selectedTab != PreviewTab.Script) {
@@ -231,7 +227,7 @@ fun ReaderCachePreviewScreen(
                     } else if (books.isEmpty()) {
                         item {
                             Text(
-                                text = "还没有本地缓存。打开阅读朗读后，TTS 会按预加载窗口生成台词本队列。",
+                                text = "还没有预缓存队列。打开 J.阅读朗读后，J.TTS 会按预加载窗口生成章节缓存队列。",
                                 modifier = Modifier.padding(8.dp),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -331,7 +327,7 @@ fun ReaderCachePreviewScreen(
                     }
                 }
 
-                PreviewTab.RuleLog, PreviewTab.CacheLog, PreviewTab.PluginLog -> {
+                PreviewTab.RuleLog, PreviewTab.CacheLog -> {
                     if (visibleLogs.isEmpty()) {
                         item {
                             Text(
