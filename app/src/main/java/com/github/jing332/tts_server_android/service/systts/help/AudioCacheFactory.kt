@@ -45,6 +45,7 @@ object AudioCacheFactory {
         val bytes: ByteArray,
         val chapterKey: String,
         val index: Int,
+        val voice: String,
     )
 
     data class PreviewBook(
@@ -102,6 +103,7 @@ object AudioCacheFactory {
         val bookKey = window.optString("bookUrl", window.optString("bookName", "")).md5()
         val chapters = window.optJSONArray("chapters") ?: return null
         val textHash = cleanText.md5()
+        val lookupTextHash = cleanText.lookupTextKey().md5()
         val configFingerprint = currentConfigFingerprint()
 
         for (i in 0 until chapters.length()) {
@@ -112,7 +114,10 @@ object AudioCacheFactory {
 
             for (j in 0 until items.length()) {
                 val item = items.optJSONObject(j) ?: continue
-                if (item.optString("textHash") != textHash) continue
+                val cachedLookupTextHash = item.optString("lookupTextHash", "").ifBlank {
+                    item.optString("text", "").lookupTextKey().md5()
+                }
+                if (item.optString("textHash") != textHash && cachedLookupTextHash != lookupTextHash) continue
                 if (item.optString("configFingerprint") != configFingerprint) continue
 
                 val file = File(item.optString("path", ""))
@@ -123,6 +128,7 @@ object AudioCacheFactory {
                     bytes = file.readBytes(),
                     chapterKey = chapterKey,
                     index = item.optInt("index", -1),
+                    voice = item.optString("voice", "").ifBlank { item.optString("tag", "") },
                 )
             }
         }
@@ -729,6 +735,7 @@ object AudioCacheFactory {
                 .put("index", index)
                 .put("text", text)
                 .put("textHash", text.md5())
+                .put("lookupTextHash", text.lookupTextKey().md5())
                 .put("tag", queueItem?.tag.orEmpty())
                 .put("voice", queueItem?.voice.orEmpty())
                 .put("emotion", queueItem?.emotion.orEmpty())
@@ -945,6 +952,10 @@ object AudioCacheFactory {
     private fun String.md5(): String {
         val digest = MessageDigest.getInstance("MD5").digest(toByteArray(Charsets.UTF_8))
         return digest.joinToString("") { "%02x".format(it) }
+    }
+
+    private fun String.lookupTextKey(): String {
+        return trim().filterNot { it.isWhitespace() }
     }
 
     private fun previewChapter(bookKey: String, dir: File): PreviewChapter? {
