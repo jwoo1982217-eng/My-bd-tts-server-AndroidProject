@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -52,10 +51,13 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.github.jing332.common.LogEntry
 import com.github.jing332.common.utils.sizeToReadable
 import com.github.jing332.common.utils.toast
 import com.github.jing332.tts_server_android.R
 import com.github.jing332.tts_server_android.compose.nav.NavTopAppBar
+import com.github.jing332.tts_server_android.compose.systts.UserTtsLogViewModel
 import com.github.jing332.tts_server_android.service.systts.SystemTtsService
 import com.github.jing332.tts_server_android.service.systts.help.AudioCacheFactory
 import kotlinx.coroutines.Dispatchers
@@ -65,14 +67,17 @@ import kotlinx.coroutines.withContext
 
 private enum class PreviewTab(val title: String) {
     Script("台词本"),
+    ReadLog("实际朗读"),
     RuleLog("朗读规则"),
-    CacheLog("缓存队列"),
-    PluginLog("插件/同步")
+    PluginLog("插件日志"),
+    CacheLog("缓存队列")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ReaderCachePreviewScreen() {
+fun ReaderCachePreviewScreen(
+    userLogViewModel: UserTtsLogViewModel = viewModel(),
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val expanded = remember { mutableStateMapOf<String, Boolean>() }
@@ -150,7 +155,7 @@ fun ReaderCachePreviewScreen() {
         PreviewTab.PluginLog -> previewLogs.filter {
             it.source != "朗读规则" && it.source != "缓存队列"
         }
-        PreviewTab.Script -> emptyList()
+        PreviewTab.Script, PreviewTab.ReadLog -> emptyList()
     }
 
     Scaffold(
@@ -163,13 +168,22 @@ fun ReaderCachePreviewScreen() {
                 actions = {
                     if (selectedTab != PreviewTab.Script) {
                         IconButton(
-                            enabled = previewLogs.isNotEmpty(),
+                            enabled = if (selectedTab == PreviewTab.ReadLog) {
+                                userLogViewModel.logs.isNotEmpty()
+                            } else {
+                                previewLogs.isNotEmpty()
+                            },
                             onClick = {
-                                scope.launch(Dispatchers.IO) {
-                                    AudioCacheFactory.clearPreviewLogs(context)
-                                    withContext(Dispatchers.Main) {
-                                        context.toast("日志已清空")
-                                        reloadLogs()
+                                if (selectedTab == PreviewTab.ReadLog) {
+                                    userLogViewModel.clear()
+                                    context.toast("实际朗读日志已清空")
+                                } else {
+                                    scope.launch(Dispatchers.IO) {
+                                        AudioCacheFactory.clearPreviewLogs(context)
+                                        withContext(Dispatchers.Main) {
+                                            context.toast("日志已清空")
+                                            reloadLogs()
+                                        }
                                     }
                                 }
                             }
@@ -298,7 +312,26 @@ fun ReaderCachePreviewScreen() {
                     }
                 }
 
-                else -> {
+                PreviewTab.ReadLog -> {
+                    if (userLogViewModel.logs.isEmpty()) {
+                        item {
+                            Text(
+                                text = "暂无实际朗读日志。",
+                                modifier = Modifier.padding(8.dp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    } else {
+                        items(
+                            userLogViewModel.logs,
+                            key = { "${it.time}_${it.level}_${it.message}" }
+                        ) { log ->
+                            UserLogRow(log)
+                        }
+                    }
+                }
+
+                PreviewTab.RuleLog, PreviewTab.CacheLog, PreviewTab.PluginLog -> {
                     if (visibleLogs.isEmpty()) {
                         item {
                             Text(
@@ -333,6 +366,31 @@ private fun PreviewTabs(
                 label = { Text(tab.title) },
                 modifier = Modifier.weight(1f),
                 enabled = selectedTab != tab
+            )
+        }
+    }
+}
+
+@Composable
+private fun UserLogRow(log: LogEntry) {
+    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = "${log.time} · 实际朗读",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Text(
+                text = log.message
+                    .replace("<br>", "\n")
+                    .replace("<br/>", "\n")
+                    .replace("<br />", "\n"),
+                style = MaterialTheme.typography.bodySmall
             )
         }
     }
