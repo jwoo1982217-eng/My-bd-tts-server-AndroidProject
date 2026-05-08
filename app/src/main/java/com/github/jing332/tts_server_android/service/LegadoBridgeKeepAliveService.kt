@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import com.github.jing332.tts_server_android.service.forwarder.ForwarderServiceManager.startSysTtsForwarder
 
 class LegadoBridgeKeepAliveService : Service() {
 
@@ -39,6 +40,7 @@ class LegadoBridgeKeepAliveService : Service() {
         super.onCreate()
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
+        startSysTtsForwarder()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -50,6 +52,7 @@ class LegadoBridgeKeepAliveService : Service() {
             }
             ACTION_START, null -> {
                 startForeground(NOTIFICATION_ID, buildNotification())
+                startSysTtsForwarder()
             }
         }
         return START_STICKY
