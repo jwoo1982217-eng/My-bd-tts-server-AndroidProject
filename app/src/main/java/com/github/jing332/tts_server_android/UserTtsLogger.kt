@@ -31,22 +31,34 @@ object UserTtsLogger {
         text: String,
         voiceName: String,
     ) {
-        val time = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()).format(Date())
-
-        val safeText = text
-            .replace("\n", " ")
-            .replace("\r", " ")
-            .trim()
-
-        val safeVoice = voiceName.ifBlank { "未知音色" }
-
-        val message = "音色：$safeVoice<br>文本：$safeText"
-
-        val entry = LogEntry(
-            level = LogLevel.INFO,
-            time = time,
-            message = message
+        writeSpeakLog(
+            text = text,
+            voiceName = voiceName,
+            prefix = ""
         )
+    }
+
+    fun logCacheSpeak(
+        text: String,
+        voiceName: String,
+    ) {
+        writeSpeakLog(
+            text = text,
+            voiceName = voiceName,
+            prefix = "调用缓存音频<br>"
+        )
+    }
+
+    private fun writeSpeakLog(
+        text: String,
+        voiceName: String,
+        prefix: String,
+    ) {
+        val time = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()).format(Date())
+        val safeText = text.replace("\n", " ").replace("\r", " ").trim()
+        val safeVoice = voiceName.ifBlank { "未知音色" }
+        val message = "${prefix}音色：$safeVoice<br>文本：$safeText"
+        val entry = LogEntry(level = LogLevel.INFO, time = time, message = message)
 
         runCatching {
             if (!file.parentFile.exists()) file.parentFile.mkdirs()

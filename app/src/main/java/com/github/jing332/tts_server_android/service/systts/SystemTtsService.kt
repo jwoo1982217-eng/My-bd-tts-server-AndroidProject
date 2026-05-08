@@ -459,11 +459,11 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
         AudioCacheFactory.getCachedAudio(applicationContext, text)?.let { cached ->
             logger.debug { "reader audio cache hit: ${cached.chapterKey}#${cached.index}" }
             if (safeStart(cached.sampleRate)) {
-                UserTtsLogger.logSpeak(
+                UserTtsLogger.logCacheSpeak(
                     text = text,
                     voiceName = cached.voice.ifBlank { "本地缓存" }
                 )
-                logI("缓存命中：${htmlEscapeForLog(normalizeLogText(text))}")
+                logI("调用缓存音频：${htmlEscapeForLog(normalizeLogText(text))}")
                 writeToCallBack(callback, cached.bytes)
                 safeDone()
                 AudioCacheFactory.warmCurrentWindow(applicationContext, mTtsManager)
