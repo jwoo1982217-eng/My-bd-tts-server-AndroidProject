@@ -22,6 +22,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -36,6 +38,7 @@ object AudioCacheFactory {
     private val logger = KotlinLogging.logger("AudioCacheFactory")
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val warming = AtomicBoolean(false)
+    private val cacheWorkMutex = Mutex()
 
     @Volatile
     private var warmJob: Job? = null
@@ -187,25 +190,50 @@ object AudioCacheFactory {
 
         warmJob = scope.launch {
             try {
-                val manager = getBackgroundManager(context, liveManager)
-                val window = ReaderChapterBridgeClient.fetchChapterWindowJson()
-                if (!window.optBoolean("ok", false)) return@launch
+                cacheWorkMutex.withLock {
+                    val manager = getBackgroundManager(context, liveManager)
+                    val window = ReaderChapterBridgeClient.fetchChapterWindowJson()
+                    if (!window.optBoolean("ok", false)) return@withLock
 
-                val bookKey = window.optString("bookUrl", window.optString("bookName", "")).md5()
-                val bookName = window.optString("bookName", "")
-                val chapters = window.optJSONArray("chapters") ?: return@launch
+                    val bookKey = window.optString("bookUrl", window.optString("bookName", "")).md5()
+                    val bookName = window.optString("bookName", "")
+                    val chapters = window.optJSONArray("chapters") ?: return@withLock
 
-                for (i in 0 until chapters.length()) {
-                    val chapter = chapters.optJSONObject(i) ?: continue
-                    if (!chapter.optBoolean("ok", false)) continue
-
-                    cacheChapter(
+                    appendPreviewLog(
                         context = context,
-                        manager = manager,
-                        bookKey = bookKey,
-                        bookName = bookName,
-                        chapter = chapter
+                        source = "缓存队列",
+                        message = "开始窗口缓存｜书=${bookName.ifBlank { bookKey }}｜章节=${chapters.length()}｜按章顺序执行"
                     )
+
+                    for (i in 0 until chapters.length()) {
+                        val chapter = chapters.optJSONObject(i) ?: continue
+                        if (!chapter.optBoolean("ok", false)) continue
+
+                        val chapterIndex = chapter.optInt("chapterIndex", -1)
+                        val chapterTitle = chapter.optString("chapterTitle", "")
+                        appendPreviewLog(
+                            context = context,
+                            source = "缓存队列",
+                            message = "开始章节｜$chapterIndex $chapterTitle"
+                        )
+
+                        cacheChapter(
+                            context = context,
+                            manager = manager,
+                            bookKey = bookKey,
+                            bookName = bookName,
+                            chapter = chapter
+                        )
+
+                        val status = readManifest(
+                            chapterDir(context, bookKey, chapterKey(bookKey, chapterIndex))
+                        )?.optString("status", "").orEmpty()
+                        appendPreviewLog(
+                            context = context,
+                            source = "缓存队列",
+                            message = "完成章节｜$chapterIndex $chapterTitle｜$status"
+                        )
+                    }
                 }
             } catch (e: Exception) {
                 logger.warn(e) { "warm current window failed" }
@@ -324,8 +352,10 @@ object AudioCacheFactory {
 
         scope.launch {
             val ok = runCatching {
-                val manager = getBackgroundManager(context, liveManager)
-                retryFailedItemsInternal(context, manager, bookKey, chapterKey)
+                cacheWorkMutex.withLock {
+                    val manager = getBackgroundManager(context, liveManager)
+                    retryFailedItemsInternal(context, manager, bookKey, chapterKey)
+                }
             }.onFailure {
                 logger.warn(it) { "retry failed cache items failed" }
             }.getOrDefault(false)
@@ -349,8 +379,10 @@ object AudioCacheFactory {
 
         scope.launch {
             val ok = runCatching {
-                val manager = getBackgroundManager(context, liveManager)
-                retryItemsInternal(context, manager, bookKey, chapterKey, setOf(itemIndex))
+                cacheWorkMutex.withLock {
+                    val manager = getBackgroundManager(context, liveManager)
+                    retryItemsInternal(context, manager, bookKey, chapterKey, setOf(itemIndex))
+                }
             }.onFailure {
                 logger.warn(it) { "retry cache item failed" }
             }.getOrDefault(false)
@@ -376,7 +408,11 @@ object AudioCacheFactory {
         val dir = chapterDir(context, bookKey, chapterKey)
         val manifest = readManifest(dir) ?: newManifest(bookName, chapter, chapterKey)
         val configFingerprint = currentConfigFingerprint()
-        val queue = prepareQueue(context, bookName, chapter)
+        manifest.put("status", "analyzing")
+        manifest.put("updatedAt", System.currentTimeMillis())
+        writeManifest(dir, manifest)
+
+        val queue = prepareQueue(context, bookName, chapter).sortedBy { it.index }
 
         syncRoleManagerBookFiles(context, bookName, bookKey, chapter, queue)
 
@@ -389,23 +425,55 @@ object AudioCacheFactory {
         }
 
         writeQueue(dir, queue)
-        manifest.put("status", "caching_audio")
+        manifest.put("status", "queue_ready")
+        manifest.put("queueSize", queue.size)
         manifest.put("configFingerprint", configFingerprint)
+        manifest.put("updatedAt", System.currentTimeMillis())
         writeManifest(dir, manifest)
 
+        manifest.put("status", "caching_audio")
+        manifest.put("configFingerprint", configFingerprint)
+        manifest.put("updatedAt", System.currentTimeMillis())
+        writeManifest(dir, manifest)
+
+        appendPreviewLog(
+            context = context,
+            source = "缓存队列",
+            message = "章节队列就绪｜${chapter.optInt("chapterIndex", -1)} ${chapter.optString("chapterTitle", "")}｜${queue.size}句｜按台词本顺序请求"
+        )
+
         for (item in queue) {
-            if (hasItem(manifest, item, configFingerprint)) continue
+            val latestManifest = readManifest(dir) ?: manifest
+            if (hasItem(latestManifest, item, configFingerprint)) {
+                updateQueueItem(dir, item.index, "ready")
+                continue
+            }
 
             updateQueueItem(dir, item.index, "caching_audio")
+            appendPreviewLog(
+                context = context,
+                source = "缓存队列",
+                message = "请求音频｜${chapter.optInt("chapterIndex", -1)}#${item.index.toString().padStart(2, '0')}｜${item.tag.ifBlank { "旁白" }}｜${item.voice.ifBlank { "默认音色" }}"
+            )
             val config = resolveTtsConfig(manager, item)
             if (config == null) {
                 updateQueueItem(dir, item.index, "failed", "No matching TTS config")
+                appendPreviewLog(
+                    context = context,
+                    source = "缓存队列",
+                    message = "请求失败｜${chapter.optInt("chapterIndex", -1)}#${item.index.toString().padStart(2, '0')}｜没有匹配音色"
+                )
                 continue
             }
 
             val audio = synthesizeQueueItemToPcm(manager, item, config)
             if (audio == null) {
                 updateQueueItem(dir, item.index, "failed", "TTS request failed")
+                appendPreviewLog(
+                    context = context,
+                    source = "缓存队列",
+                    message = "请求失败｜${chapter.optInt("chapterIndex", -1)}#${item.index.toString().padStart(2, '0')}｜TTS 请求失败"
+                )
                 continue
             }
             saveItem(
@@ -461,6 +529,7 @@ object AudioCacheFactory {
         val manifest = readManifest(dir) ?: return false
         val queue = readQueue(dir)
             .filter { it.index in indexes }
+            .sortedBy { it.index }
 
         if (queue.isEmpty()) return true
 
@@ -664,7 +733,7 @@ object AudioCacheFactory {
             )
         }
 
-        if (queue.isNotEmpty()) return queue
+        if (queue.isNotEmpty()) return queue.sortedBy { it.index }
         if (rule != null) {
             appendPreviewLog(
                 context = context,
