@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -62,6 +63,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+private enum class PreviewTab(val title: String) {
+    Script("台词本"),
+    RuleLog("朗读规则"),
+    CacheLog("缓存队列"),
+    PluginLog("插件/同步")
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ReaderCachePreviewScreen() {
@@ -73,7 +81,7 @@ fun ReaderCachePreviewScreen() {
     var previewLogs by remember { mutableStateOf<List<AudioCacheFactory.PreviewLog>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
     var clearAllDialog by remember { mutableStateOf(false) }
-    var logDialog by remember { mutableStateOf(false) }
+    var selectedTab by remember { mutableStateOf(PreviewTab.Script) }
 
     fun reload() {
         scope.launch {
@@ -98,11 +106,11 @@ fun ReaderCachePreviewScreen() {
         reloadLogs()
     }
 
-    LaunchedEffect(logDialog) {
+    LaunchedEffect(Unit) {
         while (true) {
             delay(1500)
             reload()
-            if (logDialog) reloadLogs()
+            reloadLogs()
         }
     }
 
@@ -135,66 +143,16 @@ fun ReaderCachePreviewScreen() {
         )
     }
 
-    if (logDialog) {
-        AlertDialog(
-            onDismissRequest = { logDialog = false },
-            confirmButton = {
-                TextButton(onClick = { logDialog = false }) {
-                    Text(stringResource(R.string.close))
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    enabled = previewLogs.isNotEmpty(),
-                    onClick = {
-                        scope.launch(Dispatchers.IO) {
-                            AudioCacheFactory.clearPreviewLogs(context)
-                            withContext(Dispatchers.Main) {
-                                context.toast("台词本日志已清空")
-                                reloadLogs()
-                            }
-                        }
-                    }
-                ) {
-                    Text(stringResource(R.string.delete))
-                }
-            },
-            title = { Text("台词本日志") },
-            text = {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 420.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    if (previewLogs.isEmpty()) {
-                        item {
-                            Text(
-                                text = "暂无朗读规则或插件日志。",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    } else {
-                        items(previewLogs) { log ->
-                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                Text(
-                                    text = "${log.time} · ${log.source}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                                Text(
-                                    text = log.message,
-                                    style = MaterialTheme.typography.bodySmall
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        )
+    val scrollBehaviour = TopAppBarDefaults.pinnedScrollBehavior()
+    val visibleLogs = when (selectedTab) {
+        PreviewTab.RuleLog -> previewLogs.filter { it.source == "朗读规则" }
+        PreviewTab.CacheLog -> previewLogs.filter { it.source == "缓存队列" }
+        PreviewTab.PluginLog -> previewLogs.filter {
+            it.source != "朗读规则" && it.source != "缓存队列"
+        }
+        PreviewTab.Script -> emptyList()
     }
 
-    val scrollBehaviour = TopAppBarDefaults.pinnedScrollBehavior()
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         modifier = Modifier.nestedScroll(scrollBehaviour.nestedScrollConnection),
@@ -203,13 +161,21 @@ fun ReaderCachePreviewScreen() {
                 title = { Text(stringResource(R.string.script_preview)) },
                 scrollBehavior = scrollBehaviour,
                 actions = {
-                    TextButton(
-                        onClick = {
-                            reloadLogs()
-                            logDialog = true
+                    if (selectedTab != PreviewTab.Script) {
+                        IconButton(
+                            enabled = previewLogs.isNotEmpty(),
+                            onClick = {
+                                scope.launch(Dispatchers.IO) {
+                                    AudioCacheFactory.clearPreviewLogs(context)
+                                    withContext(Dispatchers.Main) {
+                                        context.toast("日志已清空")
+                                        reloadLogs()
+                                    }
+                                }
+                            }
+                        ) {
+                            Icon(Icons.Default.DeleteOutline, contentDescription = "清空日志")
                         }
-                    ) {
-                        Text("日志")
                     }
                     IconButton(onClick = { reload() }) {
                         Icon(Icons.Default.Refresh, contentDescription = "刷新")
@@ -229,93 +195,167 @@ fun ReaderCachePreviewScreen() {
                 .padding(paddingValues)
                 .fillMaxSize(),
             verticalArrangement = Arrangement.spacedBy(10.dp),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp)
+            contentPadding = PaddingValues(12.dp)
         ) {
-            if (loading) {
-                item {
-                    Text(
-                        text = stringResource(R.string.loading),
-                        modifier = Modifier.padding(8.dp),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            } else if (books.isEmpty()) {
-                item {
-                    Text(
-                        text = "还没有本地缓存。打开阅读朗读后，TTS 会按预加载窗口生成台词本队列。",
-                        modifier = Modifier.padding(8.dp),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+            item(key = "preview_tabs") {
+                PreviewTabs(
+                    selectedTab = selectedTab,
+                    onSelected = { selectedTab = it }
+                )
             }
 
-            books.forEach { book ->
-                item(key = "${book.bookKey}_title") {
-                    Column(Modifier.padding(horizontal = 4.dp)) {
-                        Text(
-                            text = book.bookName,
-                            style = MaterialTheme.typography.titleMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = "${book.chapters.size} 章 · ${book.sizeBytes.sizeToReadable()}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+            when (selectedTab) {
+                PreviewTab.Script -> {
+                    if (loading) {
+                        item {
+                            Text(
+                                text = stringResource(R.string.loading),
+                                modifier = Modifier.padding(8.dp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    } else if (books.isEmpty()) {
+                        item {
+                            Text(
+                                text = "还没有本地缓存。打开阅读朗读后，TTS 会按预加载窗口生成台词本队列。",
+                                modifier = Modifier.padding(8.dp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    books.forEach { book ->
+                        item(key = "${book.bookKey}_title") {
+                            Column(Modifier.padding(horizontal = 4.dp)) {
+                                Text(
+                                    text = book.bookName,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "${book.chapters.size} 章 · ${book.sizeBytes.sizeToReadable()}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        items(book.chapters, key = { it.chapterKey }) { chapter ->
+                            ChapterCard(
+                                chapter = chapter,
+                                expanded = expanded[chapter.chapterKey] == true,
+                                onToggle = {
+                                    expanded[chapter.chapterKey] =
+                                        expanded[chapter.chapterKey] != true
+                                },
+                                onClear = {
+                                    scope.launch(Dispatchers.IO) {
+                                        AudioCacheFactory.clearChapter(
+                                            context,
+                                            chapter.bookKey,
+                                            chapter.chapterKey
+                                        )
+                                        withContext(Dispatchers.Main) {
+                                            context.toast("已清空本章缓存")
+                                            reload()
+                                        }
+                                    }
+                                },
+                                onRetry = {
+                                    context.toast("开始重试失败句子")
+                                    SystemTtsService.retryReaderAudioCacheFailed(
+                                        context = context,
+                                        bookKey = chapter.bookKey,
+                                        chapterKey = chapter.chapterKey
+                                    ) { ok ->
+                                        scope.launch {
+                                            context.toast(
+                                                if (ok) "重试完成" else "TTS 服务未运行，先朗读一次后再试"
+                                            )
+                                            reload()
+                                        }
+                                    }
+                                },
+                                onRetryItem = { item ->
+                                    context.toast("开始重试第 ${item.index} 句")
+                                    SystemTtsService.retryReaderAudioCacheItem(
+                                        context = context,
+                                        bookKey = chapter.bookKey,
+                                        chapterKey = chapter.chapterKey,
+                                        itemIndex = item.index
+                                    ) { ok ->
+                                        scope.launch {
+                                            context.toast(
+                                                if (ok) "单句重试完成" else "TTS 服务未运行，先朗读一次后再试"
+                                            )
+                                            reload()
+                                        }
+                                    }
+                                }
+                            )
+                        }
                     }
                 }
 
-                items(book.chapters, key = { it.chapterKey }) { chapter ->
-                    ChapterCard(
-                        chapter = chapter,
-                        expanded = expanded[chapter.chapterKey] == true,
-                        onToggle = {
-                            expanded[chapter.chapterKey] = expanded[chapter.chapterKey] != true
-                        },
-                        onClear = {
-                            scope.launch(Dispatchers.IO) {
-                                AudioCacheFactory.clearChapter(
-                                    context,
-                                    chapter.bookKey,
-                                    chapter.chapterKey
-                                )
-                                withContext(Dispatchers.Main) {
-                                    context.toast("已清空本章缓存")
-                                    reload()
-                                }
-                            }
-                        },
-                        onRetry = {
-                            context.toast("开始重试失败句子")
-                            SystemTtsService.retryReaderAudioCacheFailed(
-                                context = context,
-                                bookKey = chapter.bookKey,
-                                chapterKey = chapter.chapterKey
-                            ) { ok ->
-                                scope.launch {
-                                    context.toast(if (ok) "重试完成" else "TTS 服务未运行，先朗读一次后再试")
-                                    reload()
-                                }
-                            }
-                        },
-                        onRetryItem = { item ->
-                            context.toast("开始重试第 ${item.index} 句")
-                            SystemTtsService.retryReaderAudioCacheItem(
-                                context = context,
-                                bookKey = chapter.bookKey,
-                                chapterKey = chapter.chapterKey,
-                                itemIndex = item.index
-                            ) { ok ->
-                                scope.launch {
-                                    context.toast(if (ok) "单句重试完成" else "TTS 服务未运行，先朗读一次后再试")
-                                    reload()
-                                }
-                            }
+                else -> {
+                    if (visibleLogs.isEmpty()) {
+                        item {
+                            Text(
+                                text = "暂无${selectedTab.title}日志。",
+                                modifier = Modifier.padding(8.dp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
-                    )
+                    } else {
+                        items(visibleLogs, key = { "${it.time}_${it.source}_${it.message}" }) { log ->
+                            LogRow(log)
+                        }
+                    }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun PreviewTabs(
+    selectedTab: PreviewTab,
+    onSelected: (PreviewTab) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        PreviewTab.entries.forEach { tab ->
+            AssistChip(
+                onClick = { onSelected(tab) },
+                label = { Text(tab.title) },
+                modifier = Modifier.weight(1f),
+                enabled = selectedTab != tab
+            )
+        }
+    }
+}
+
+@Composable
+private fun LogRow(log: AudioCacheFactory.PreviewLog) {
+    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = "${log.time} · ${log.source}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Text(
+                text = log.message,
+                style = MaterialTheme.typography.bodySmall
+            )
         }
     }
 }
