@@ -24,6 +24,7 @@ class SpeechRuleEngine(
         const val FUNC_SPLIT_TEXT = "splitText"
         const val FUNC_PROCESS_TEXT = "processText"
         const val FUNC_PROCESS_CTX = "processCtx"
+        const val FUNC_PREPARE_CHAPTER_AUDIO_QUEUE = "prepareChapterAudioQueue"
 
         fun getTagName(context: Context, speechRule: SpeechRule, info: SpeechRuleInfo): String {
             val engine = SpeechRuleEngine(context, speechRule)
@@ -95,6 +96,32 @@ class SpeechRuleEngine(
             engine.invokeMethod(objJS, FUNC_PROCESS_CTX, ctxJson)?.toString() ?: ctxJson
         } catch (_: NoSuchMethodException) {
             ctxJson
+        }
+    }
+
+    fun prepareChapterAudioQueueIfExists(chapter: Map<String, Any?>): List<Map<String, Any?>> {
+        return try {
+            val result = engine.invokeMethod(objJS, FUNC_PREPARE_CHAPTER_AUDIO_QUEUE, chapter)
+            normalizeAudioQueueResult(result)
+        } catch (_: NoSuchMethodException) {
+            emptyList()
+        }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun normalizeAudioQueueResult(value: Any?): List<Map<String, Any?>> {
+        val rawList = when (value) {
+            is List<*> -> value
+            is Map<*, *> -> {
+                val queue = value["audioQueue"] ?: value["queue"] ?: value["items"]
+                queue as? List<*> ?: emptyList<Any?>()
+            }
+
+            else -> emptyList()
+        }
+
+        return rawList.mapNotNull { item ->
+            (item as? Map<*, *>)?.mapKeys { it.key.toString() } as? Map<String, Any?>
         }
     }
 
