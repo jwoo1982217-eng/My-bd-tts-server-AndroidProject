@@ -57,17 +57,30 @@ jobs:
 
       - name: Find release APK
         run: |
-          find app/build/outputs/apk -type f -name "*release*.apk" -print
+          echo "All APK/AAB outputs:"
+          find . -type f \( -name "*.apk" -o -name "*.aab" \) -print || true
+
+          APK=$(find . -type f -name "*.apk" | grep -Ei "release|app" | head -n 1)
+          echo "APK=$APK"
+
+          if [ -z "$APK" ]; then
+            echo "No APK found. Full build output tree:"
+            find . -path "*/build/outputs/*" -type f -print || true
+            exit 1
+          fi
+
+          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
 
       - name: Sign release APK
         run: |
           mkdir -p signed-apk
 
-          APK=$(find app/build/outputs/apk -type f \( -name "*release*unsigned*.apk" -o -name "*release*.apk" \) | head -n 1)
+          APK="${APK_PATH}"
           echo "APK=$APK"
 
-          if [ -z "$APK" ]; then
-            echo "No release APK found"
+          if [ -z "$APK" ] || [ ! -f "$APK" ]; then
+            echo "APK_PATH is empty or file does not exist"
+            find . -type f -name "*.apk" -print || true
             exit 1
           fi
 
