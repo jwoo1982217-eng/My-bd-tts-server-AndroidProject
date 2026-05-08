@@ -208,10 +208,14 @@ class TextProcessor : ITextProcessor {
     private fun buildModuleCtxJson(text: String): String {
         val readerChapter = ReaderChapterBridgeClient.fetchCurrentChapterJson()
         val readerChapterJson = readerChapter.toString()
+        val readerChapterWindow = ReaderChapterBridgeClient.fetchChapterWindowJson()
+        val readerChapterWindowJson = readerChapterWindow.toString()
 
         val metaJson = JSONObject()
             .put("readerChapterJson", readerChapterJson)
             .put("readerChapterJsonLen", readerChapterJson.length)
+            .put("readerChapterWindowJson", readerChapterWindowJson)
+            .put("readerChapterWindowJsonLen", readerChapterWindowJson.length)
             .put("readerChapterBridgeMark", "reader-bridge-meta-v1")
 
         return JSONObject()
@@ -221,6 +225,9 @@ class TextProcessor : ITextProcessor {
             .put("readerChapter", readerChapter)
             .put("readerChapterJson", readerChapterJson)
             .put("readerChapterJsonLen", readerChapterJson.length)
+            .put("readerChapterWindow", readerChapterWindow)
+            .put("readerChapterWindowJson", readerChapterWindowJson)
+            .put("readerChapterWindowJsonLen", readerChapterWindowJson.length)
             .put("readerChapterBridgeMark", "reader-bridge-v2")
             .put("roles", JSONObject())
             .put("emotions", JSONObject())
@@ -453,14 +460,21 @@ class TextProcessor : ITextProcessor {
 
             val readerChapter = ReaderChapterBridgeClient.fetchCurrentChapterJson()
             val readerChapterJson = readerChapter.toString()
+            val readerChapterWindow = ReaderChapterBridgeClient.fetchChapterWindowJson()
+            val readerChapterWindowJson = readerChapterWindow.toString()
 
             obj.put("readerChapter", readerChapter)
             obj.put("readerChapterJson", readerChapterJson)
             obj.put("readerChapterJsonLen", readerChapterJson.length)
+            obj.put("readerChapterWindow", readerChapterWindow)
+            obj.put("readerChapterWindowJson", readerChapterWindowJson)
+            obj.put("readerChapterWindowJsonLen", readerChapterWindowJson.length)
             obj.put("readerChapterBridgeMark", "reader-bridge-runtime-v1")
 
             meta.put("readerChapterJson", readerChapterJson)
             meta.put("readerChapterJsonLen", readerChapterJson.length)
+            meta.put("readerChapterWindowJson", readerChapterWindowJson)
+            meta.put("readerChapterWindowJsonLen", readerChapterWindowJson.length)
             meta.put("readerChapterBridgeMark", "reader-bridge-runtime-v1")
 
             obj.put("meta", meta)
