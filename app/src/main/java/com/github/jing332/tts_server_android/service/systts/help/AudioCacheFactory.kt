@@ -378,7 +378,13 @@ object AudioCacheFactory {
         val configFingerprint = currentConfigFingerprint()
         val queue = prepareQueue(context, bookName, chapter)
 
-        if (queue.isEmpty()) return
+        if (queue.isEmpty()) {
+            manifest.put("status", "failed")
+            manifest.put("error", "朗读规则没有生成台词本队列")
+            manifest.put("updatedAt", System.currentTimeMillis())
+            writeManifest(dir, manifest)
+            return
+        }
 
         writeQueue(dir, queue)
         manifest.put("status", "caching_audio")
@@ -416,7 +422,12 @@ object AudioCacheFactory {
         }
 
         val latest = readManifest(dir) ?: manifest
-        latest.put("status", "ready")
+        val latestQueue = readQueue(dir)
+        latest.put(
+            "status",
+            if (latestQueue.any { it.raw.optString("status") == "failed" }) "failed" else "ready"
+        )
+        latest.remove("error")
         writeManifest(dir, latest)
     }
 
@@ -652,6 +663,14 @@ object AudioCacheFactory {
         }
 
         if (queue.isNotEmpty()) return queue
+        if (rule != null) {
+            appendPreviewLog(
+                context = context,
+                source = "朗读规则",
+                message = "${chapter.optInt("chapterIndex", -1)} ${chapter.optString("chapterTitle", "")} 没有返回有效 audioQueue，台词本不再自动兜底成旁白。"
+            )
+            return emptyList()
+        }
 
         return splitSentences(chapterText).mapIndexed { index, sentence ->
             QueueItem(
