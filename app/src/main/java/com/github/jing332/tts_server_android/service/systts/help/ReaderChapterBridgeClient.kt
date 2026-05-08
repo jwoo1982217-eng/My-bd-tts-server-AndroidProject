@@ -9,12 +9,12 @@ import java.net.URL
  * 阅读 App 当前章节直通桥。
  *
  * 默认读取：
- * http://127.0.0.1:1122/tts/current-chapter
+ * http://127.0.0.1:18326/tts/current-chapter
  *
  * 返回内容会写入朗读规则 ctx.readerChapter。
  */
 object ReaderChapterBridgeClient {
-    private const val DEFAULT_URL = "http://127.0.0.1:1122/tts/current-chapter"
+    private const val DEFAULT_URL = "http://127.0.0.1:18326/tts/current-chapter"
     private const val CACHE_TTL_MS = 5000L
 
     @Volatile
