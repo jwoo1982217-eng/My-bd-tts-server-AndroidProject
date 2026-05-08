@@ -762,7 +762,22 @@ object AudioCacheFactory {
             )
         }
 
-        if (queue.isNotEmpty()) return queue.sortedBy { it.index }
+        if (queue.isNotEmpty()) {
+            val hasRuleResult = queue.any { item ->
+                item.tag.isNotBlank() || item.voice.isNotBlank()
+            }
+
+            if (hasRuleResult) {
+                return queue.sortedBy { it.index }
+            }
+
+            appendPreviewLog(
+                context = context,
+                source = "朗读规则",
+                message = "${chapter.optInt("chapterIndex", -1)} ${chapter.optString("chapterTitle", "")} 新队列缺少角色/音色结果，改用旧朗读规则兼容模式。"
+            )
+        }
+
         if (rule != null) {
             val legacyQueue = prepareLegacyRuleQueue(
                 context = context,
