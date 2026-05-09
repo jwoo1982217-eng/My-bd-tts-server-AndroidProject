@@ -457,6 +457,10 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
         updateNotification(getString(R.string.systts_state_synthesizing), text)
         AudioCacheFactory.warmCurrentWindow(applicationContext, mTtsManager)
 
+        val runtimeLogText = htmlEscapeForLog(normalizeLogText(text))
+        logI("朗读执行｜收到句子：$runtimeLogText")
+        logI("朗读执行｜查询缓存库：$runtimeLogText")
+
         AudioCacheFactory.getCachedAudio(applicationContext, text)?.let { cached ->
             logger.debug { "reader audio cache hit: ${cached.chapterKey}#${cached.index}" }
             if (safeStart(cached.sampleRate)) {
@@ -464,7 +468,7 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
                     text = text,
                     voiceName = cached.voice.ifBlank { "本地缓存" }
                 )
-                logI("调用缓存音频：${htmlEscapeForLog(normalizeLogText(text))}")
+                logI("朗读执行｜缓存命中｜直接返回缓存音频：$runtimeLogText<br>${htmlEscapeForLog(cached.chapterKey)}#${cached.index}｜${htmlEscapeForLog(cached.voice.ifBlank { "本地缓存" })}")
                 writeToCallBack(callback, cached.bytes)
                 safeDone()
                 AudioCacheFactory.warmCurrentWindow(applicationContext, mTtsManager)
@@ -476,6 +480,8 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
             }
             return
         }
+
+        logI("朗读执行｜缓存未命中｜实时补请求TTS：$runtimeLogText")
 
         val enabledBgm = request.params.getBoolean(PARAM_BGM_ENABLED, true)
         mTtsManager?.context?.cfg?.bgmEnabled = { enabledBgm }
@@ -525,6 +531,7 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
                         sampleRate = synthesizedSampleRate,
                         bytes = synthesizedAudio.toByteArray()
                     )
+                    logI("朗读执行｜获取成功｜写入缓存库：$runtimeLogText")
                     AudioCacheFactory.warmCurrentWindow(applicationContext, manager)
                     safeDone()
                 }.onFailure {
@@ -1331,7 +1338,7 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
         val assignment = htmlEscapeForLog(roleVoiceAssignmentForUserLog(roleName))
 
         return buildString {
-            append("请求音频：")
+            append("朗读执行｜实时补请求TTS：")
             append(cleanText)
             append("<br>")
             append(htmlEscapeForLog(roleName))

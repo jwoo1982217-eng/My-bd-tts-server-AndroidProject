@@ -68,7 +68,7 @@
     <string name="server_token_set_to">Token已设为：</string>
 
     <string name="system_tts">系统TTS</string>
-    <string name="script_preview">台词本预览</string>
+    <string name="script_preview">幕后</string>
     <string name="settings">设置</string>
     <string name="global_settings">全局设置</string>
     <string name="copy_address">复制地址</string>

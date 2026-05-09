@@ -66,10 +66,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private enum class PreviewTab(val title: String) {
-    Script("预缓存队列"),
-    RuleLog("朗读规则运行"),
-    CacheLog("预缓存日志"),
-    ReadLog("实际朗读")
+    Script("缓存库"),
+    RuleLog("朗读规则运行区"),
+    CacheLog("规则运行日志"),
+    ReadLog("朗读执行")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -172,7 +172,7 @@ fun ReaderCachePreviewScreen(
                             onClick = {
                                 if (selectedTab == PreviewTab.ReadLog) {
                                     userLogViewModel.clear()
-                                    context.toast("实际朗读日志已清空")
+                                    context.toast("朗读执行日志已清空")
                                 } else {
                                     scope.launch(Dispatchers.IO) {
                                         AudioCacheFactory.clearPreviewLogs(context)
@@ -227,7 +227,7 @@ fun ReaderCachePreviewScreen(
                     } else if (books.isEmpty()) {
                         item {
                             Text(
-                                text = "还没有预缓存队列。打开 J.阅读朗读后，J.TTS 会按预加载窗口生成章节缓存队列。",
+                                text = "还没有缓存库。打开 J.阅读朗读后，J.TTS 会按预加载窗口生成章节缓存队列。",
                                 modifier = Modifier.padding(8.dp),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -312,7 +312,7 @@ fun ReaderCachePreviewScreen(
                     if (userLogViewModel.logs.isEmpty()) {
                         item {
                             Text(
-                                text = "暂无实际朗读日志。",
+                                text = "暂无朗读执行日志。",
                                 modifier = Modifier.padding(8.dp),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -377,7 +377,7 @@ private fun UserLogRow(log: LogEntry) {
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             Text(
-                text = "${log.time} · 实际朗读",
+                text = "${log.time} · 朗读执行",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.primary
             )

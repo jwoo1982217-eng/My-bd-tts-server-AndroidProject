@@ -86,8 +86,8 @@ private data class DisplayLogEntry(
 )
 
 private enum class LogViewMode(val title: String) {
-    Preload("预缓存日志"),
-    Reader("实际朗读")
+    Preload("规则运行日志"),
+    Reader("朗读执行")
 }
 
 private fun isReaderCallLog(message: String): Boolean {
@@ -935,9 +935,9 @@ fun LogScreen(
 
             Text(
                 text = if (selectedLogViewMode == LogViewMode.Reader.name) {
-                    "实际朗读：只看 J.阅读朗读时请求缓存、命中缓存、调用缓存音频。"
+                    "朗读执行：只看 J.阅读朗读时请求缓存、命中缓存、调用缓存音频。"
                 } else {
-                    "预缓存日志：只看后台提前请求音频、获取成功、写入缓存、预缓存队列。"
+                    "规则运行日志：只看后台提前请求音频、获取成功、写入缓存、缓存库。"
                 },
                 modifier = Modifier.padding(horizontal = 24.dp, vertical = 2.dp),
                 style = MaterialTheme.typography.bodySmall,
