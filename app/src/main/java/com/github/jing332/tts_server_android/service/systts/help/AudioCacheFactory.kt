@@ -646,8 +646,8 @@ object AudioCacheFactory {
             bookKey = bookKey,
             bookName = realBookName,
             chapter = chapter,
-            index = actualItem.index,
-            text = actualItem.text,
+            index = finalItem.index,
+            text = finalItem.text,
             sampleRate = audio.sampleRate,
             bytes = audio.bytes,
             queueItem = finalItem,
@@ -710,10 +710,10 @@ object AudioCacheFactory {
         writeManifest(dir, manifest)
 
         queue.forEach { item ->
-            updateQueueItem(dir, item.index, "caching_audio")
+            updateQueueItem(dir, item.index, "caching_audio", queueItem = item)
             val config = resolveTtsConfig(manager, item)
             if (config == null) {
-                updateQueueItem(dir, item.index, "failed", "No matching TTS config")
+                updateQueueItem(dir, item.index, "failed", "No matching TTS config", queueItem = item)
                 return@forEach
             }
 
@@ -722,7 +722,7 @@ object AudioCacheFactory {
 
             val audio = synthesizeQueueItemToPcm(manager, actualItem, config)
             if (audio == null) {
-                updateQueueItem(dir, item.index, "failed", "TTS request failed")
+                updateQueueItem(dir, actualItem.index, "failed", "TTS request failed", queueItem = actualItem)
                 return@forEach
             }
 
@@ -756,21 +756,40 @@ object AudioCacheFactory {
 
     
 private fun bindActualRequestItem(item: QueueItem, config: TtsConfiguration): QueueItem {
-    val actualVoice = item.voice.ifBlank { config.source.voice }
-    val actualRoleName = item.raw.optString("roleName", "").ifBlank { item.tag }
-    val actualTag = item.tag.ifBlank { actualRoleName }.ifBlank { actualVoice }
+    val actualVoice = config.source.voice.trim()
+        .ifBlank { item.raw.optString("actualVoice", "") }
+        .ifBlank { item.voice }
+    val roleName = roleDisplayName(
+        roleCandidate(item.raw.optString("displayRoleName", ""))
+            .ifBlank { roleCandidate(item.raw.optString("roleName", "")) }
+            .ifBlank { roleCandidate(item.raw.optString("characterInfoRoleName", "")) }
+            .ifBlank { roleCandidate(item.tag) }
+    )
+    val displayRoleName = roleName.ifBlank { "旁白" }
+    val displayVoice = actualVoice.ifBlank { item.voice }
+    val characterInfo = copyCharacterInfo(item.raw)
+        .put("name", displayRoleName)
+        .put("roleName", displayRoleName)
+        .put("displayName", displayRoleName)
+        .put("voice", displayVoice)
+        .put("displayVoice", displayVoice)
+        .put("actualVoice", actualVoice)
 
     val raw = JSONObject(item.raw.toString())
-        .put("roleName", actualRoleName)
-        .put("tag", actualTag)
-        .put("voice", actualVoice)
+        .put("displayRoleName", displayRoleName)
+        .put("roleName", displayRoleName)
+        .put("role", displayRoleName)
+        .put("tag", displayRoleName)
+        .put("displayVoice", displayVoice)
+        .put("voice", displayVoice)
         .put("actualVoice", actualVoice)
         .put("actualConfigId", config.speechInfo.configId)
+        .put("characterInfo", characterInfo)
         .put("source", rawOptString(item.raw, "source", "speechRule"))
 
     return item.copy(
-        tag = actualTag,
-        voice = actualVoice,
+        tag = displayRoleName,
+        voice = displayVoice,
         raw = raw
     )
 }
@@ -808,25 +827,25 @@ private fun bindCacheSynthResult(item: QueueItem, request: RequestPayload?): Que
 
     val roleFromData = roleKeys.asSequence()
         .map { tagData[it]?.trim().orEmpty() }
-        .firstOrNull {
-            it.isNotBlank() &&
-                it != "未知发言人" &&
-                !it.equals("duihua", ignoreCase = true) &&
-                !it.equals("narration", ignoreCase = true)
-        }
+        .map { roleCandidate(it) }
+        .firstOrNull { it.isNotBlank() }
         .orEmpty()
 
     val requestTag = speechInfo.tag.trim()
     val requestTagName = speechInfo.tagName.trim()
 
-    val roleName = roleFromData
-        .ifBlank { item.raw.optString("roleName", "") }
-        .ifBlank { item.raw.optString("role", "") }
-        .ifBlank { requestTagName }
-        .ifBlank { item.tag }
-        .ifBlank { "旁白" }
+    val roleName = roleDisplayName(
+        roleCandidate(item.raw.optString("displayRoleName", ""))
+            .ifBlank { roleCandidate(item.raw.optString("roleName", "")) }
+            .ifBlank { roleCandidate(item.raw.optString("characterInfoRoleName", "")) }
+            .ifBlank { roleCandidate(item.tag) }
+            .ifBlank { roleFromData }
+            .ifBlank { roleCandidate(requestTagName) }
+            .ifBlank { roleCandidate(requestTag) }
+    ).ifBlank { "旁白" }
 
     val voice = listOf(
+        request.config.source.voice,
         tagData["actualVoice"],
         tagData["voice"],
         tagData["voiceName"],
@@ -835,7 +854,8 @@ private fun bindCacheSynthResult(item: QueueItem, request: RequestPayload?): Que
         tagData["声音"],
         tagData["音色"],
         tagData["personality"],
-        request.config.source.voice,
+        item.raw.optString("displayVoice", ""),
+        item.raw.optString("actualVoice", ""),
         item.voice
     ).asSequence()
         .map { it?.trim().orEmpty() }
@@ -847,26 +867,54 @@ private fun bindCacheSynthResult(item: QueueItem, request: RequestPayload?): Que
         .ifBlank { roleName }
         .ifBlank { item.tag }
 
+    val characterInfo = copyCharacterInfo(item.raw)
+        .put("name", roleName)
+        .put("roleName", roleName)
+        .put("displayName", roleName)
+        .put("voice", voice)
+        .put("displayVoice", voice)
+        .put("actualVoice", voice)
+
     val raw = JSONObject(item.raw.toString())
+        .put("displayRoleName", roleName)
         .put("roleName", roleName)
         .put("role", roleName)
-        .put("tag", actualTag)
+        .put("tag", roleName)
+        .put("displayVoice", voice)
         .put("voice", voice)
         .put("actualVoice", voice)
         .put("actualRequestTag", requestTag)
         .put("actualRequestTagName", requestTagName)
-        .put(
-            "characterInfo",
-            JSONObject()
-                .put("name", roleName)
-                .put("voice", voice)
-        )
+        .put("characterInfo", characterInfo)
 
     return item.copy(
         tag = roleName.ifBlank { actualTag },
         voice = voice,
         raw = raw
     )
+}
+
+private fun roleCandidate(value: String): String {
+    val candidate = value.trim()
+    return when {
+        candidate.isBlank() -> ""
+        candidate == "未知发言人" -> ""
+        candidate.equals("duihua", ignoreCase = true) -> ""
+        candidate.equals("dialogue", ignoreCase = true) -> ""
+        else -> candidate
+    }
+}
+
+private fun roleDisplayName(value: String): String {
+    return when {
+        value.equals("narration", ignoreCase = true) -> "旁白"
+        value.equals("narrator", ignoreCase = true) -> "旁白"
+        else -> value.trim()
+    }
+}
+
+private fun copyCharacterInfo(raw: JSONObject): JSONObject {
+    return raw.optJSONObject("characterInfo")?.let { JSONObject(it.toString()) } ?: JSONObject()
 }
 
 private suspend fun synthesizeQueueItemToPcm(
@@ -1438,28 +1486,47 @@ private suspend fun synthesizeQueueItemToPcm(
 
         val manifest = readManifest(dir) ?: newManifest(bookName, chapter, chapterKey)
         val items = manifest.optJSONArray("items") ?: JSONArray().also { manifest.put("items", it) }
+        val queueRaw = queueItem?.raw
+        val roleName = queueRaw?.optString("roleName", "").orEmpty()
+        val displayRoleName = queueRaw?.optString("displayRoleName", "").orEmpty()
+            .ifBlank { roleName }
+            .ifBlank { queueItem?.tag.orEmpty() }
+        val actualVoice = queueRaw?.optString("actualVoice", "").orEmpty()
+            .ifBlank { queueItem?.voice.orEmpty() }
+        val displayVoice = queueRaw?.optString("displayVoice", "").orEmpty()
+            .ifBlank { actualVoice }
+        val manifestItem = JSONObject()
+            .put("index", index)
+            .put("text", text)
+            .put("textHash", text.md5())
+            .put("lookupTextHash", text.lookupTextKey().md5())
+            .put("displayRoleName", displayRoleName)
+            .put("roleName", roleName.ifBlank { displayRoleName })
+            .put("tag", queueItem?.tag.orEmpty().ifBlank { displayRoleName })
+            .put("displayVoice", displayVoice)
+            .put("voice", queueItem?.voice.orEmpty().ifBlank { displayVoice })
+            .put("actualVoice", actualVoice)
+            .put("actualRequestTag", queueRaw?.optString("actualRequestTag", "").orEmpty())
+            .put("actualRequestTagName", queueRaw?.optString("actualRequestTagName", "").orEmpty())
+            .put("actualConfigId", queueRaw?.optLong("actualConfigId", 0L) ?: 0L)
+            .put("emotion", queueItem?.emotion.orEmpty())
+            .put("speed", queueItem?.speed ?: 1f)
+            .put("pitch", queueItem?.pitch ?: 1f)
+            .put("volume", queueItem?.volume ?: 1f)
+            .put("source", queueRaw?.optString("source", "speechRule").orEmpty())
+            .put("configFingerprint", configFingerprint)
+            .put("sampleRate", sampleRate.coerceAtLeast(8000))
+            .put("path", audioFile.absolutePath)
+            .put("status", "ready")
+            .put("updatedAt", System.currentTimeMillis())
+
+        queueRaw?.optJSONObject("characterInfo")?.let {
+            manifestItem.put("characterInfo", JSONObject(it.toString()))
+        }
+
         upsertItem(
             items = items,
-            item = JSONObject()
-                .put("index", index)
-                .put("text", text)
-                .put("textHash", text.md5())
-                .put("lookupTextHash", text.lookupTextKey().md5())
-                .put("roleName", queueItem?.raw?.optString("roleName", "").orEmpty())
-                .put("tag", queueItem?.tag.orEmpty())
-                .put("voice", queueItem?.voice.orEmpty())
-                .put("actualVoice", queueItem?.raw?.optString("actualVoice", queueItem?.voice.orEmpty()).orEmpty())
-                .put("actualConfigId", queueItem?.raw?.optLong("actualConfigId", 0L) ?: 0L)
-                .put("emotion", queueItem?.emotion.orEmpty())
-                .put("speed", queueItem?.speed ?: 1f)
-                .put("pitch", queueItem?.pitch ?: 1f)
-                .put("volume", queueItem?.volume ?: 1f)
-                .put("source", queueItem?.raw?.optString("source", "speechRule").orEmpty())
-                .put("configFingerprint", configFingerprint)
-                .put("sampleRate", sampleRate.coerceAtLeast(8000))
-                .put("path", audioFile.absolutePath)
-                .put("status", "ready")
-                .put("updatedAt", System.currentTimeMillis())
+            item = manifestItem
         )
         manifest.put("bookName", bookName)
         manifest.put("configFingerprint", configFingerprint)
@@ -1529,17 +1596,32 @@ private suspend fun synthesizeQueueItemToPcm(
         if (item.optInt("index", -1) != index) continue
 
         if (queueItem != null) {
+            val displayRoleName = queueItem.raw.optString("displayRoleName", "")
+                .ifBlank { queueItem.raw.optString("roleName", "") }
+                .ifBlank { queueItem.tag }
+            val actualVoice = queueItem.raw.optString("actualVoice", queueItem.voice)
+            val displayVoice = queueItem.raw.optString("displayVoice", "")
+                .ifBlank { actualVoice }
+                .ifBlank { queueItem.voice }
+
             item.put("text", queueItem.text)
-            item.put("roleName", queueItem.raw.optString("roleName", ""))
-            item.put("tag", queueItem.tag)
-            item.put("voice", queueItem.voice)
+            item.put("displayRoleName", displayRoleName)
+            item.put("roleName", queueItem.raw.optString("roleName", "").ifBlank { displayRoleName })
+            item.put("tag", queueItem.tag.ifBlank { displayRoleName })
+            item.put("displayVoice", displayVoice)
+            item.put("voice", queueItem.voice.ifBlank { displayVoice })
             item.put("emotion", queueItem.emotion)
             item.put("speed", queueItem.speed)
             item.put("pitch", queueItem.pitch)
             item.put("volume", queueItem.volume)
             item.put("source", queueItem.raw.optString("source", "speechRule"))
-            item.put("actualVoice", queueItem.raw.optString("actualVoice", queueItem.voice))
+            item.put("actualVoice", actualVoice)
+            item.put("actualRequestTag", queueItem.raw.optString("actualRequestTag", ""))
+            item.put("actualRequestTagName", queueItem.raw.optString("actualRequestTagName", ""))
             item.put("actualConfigId", queueItem.raw.optLong("actualConfigId", 0L))
+            queueItem.raw.optJSONObject("characterInfo")?.let {
+                item.put("characterInfo", JSONObject(it.toString()))
+            }
         }
 
         item.put("status", status)
@@ -2086,6 +2168,9 @@ private fun writeRoleTextToDirs(
             }
         }
 
+        fun firstNonBlank(vararg values: String): String {
+            return values.firstOrNull { it.isNotBlank() }.orEmpty()
+        }
 
         val manifestItems = manifest?.optJSONArray("items")
         val readyItems = mutableListOf<JSONObject>()
@@ -2107,16 +2192,27 @@ private fun writeRoleTextToDirs(
                     index = item.index,
                     text = item.text,
                     tag = displayRole(
-                        cached?.optString("roleName", "").orEmpty()
-                            .ifBlank { item.raw.optString("roleName", "") },
-                        cached?.optString("tag", "").orEmpty()
-                            .ifBlank { item.tag }
+                        firstNonBlank(
+                            cached?.optString("displayRoleName", "").orEmpty(),
+                            cached?.optString("roleName", "").orEmpty(),
+                            cached?.optString("tag", "").orEmpty(),
+                            item.raw.optString("displayRoleName", ""),
+                            item.raw.optString("roleName", ""),
+                            item.raw.optString("characterInfoRoleName", ""),
+                            item.tag
+                        ),
+                        item.tag
                     ),
                     voice = displayVoice(
-                        cached?.optString("actualVoice", "").orEmpty()
-                            .ifBlank { item.raw.optString("actualVoice", "") }
-                            .ifBlank { cached?.optString("voice", "").orEmpty() }
-                            .ifBlank { item.voice }
+                        firstNonBlank(
+                            cached?.optString("displayVoice", "").orEmpty(),
+                            cached?.optString("actualVoice", "").orEmpty(),
+                            cached?.optString("voice", "").orEmpty(),
+                            item.raw.optString("displayVoice", ""),
+                            item.raw.optString("actualVoice", ""),
+                            item.raw.optString("voice", ""),
+                            item.voice
+                        )
                     ),
                     status = if (cached != null) "ready" else item.raw.optString("status", "pending"),
                     emotion = item.emotion,
@@ -2132,12 +2228,19 @@ private fun writeRoleTextToDirs(
                     index = item.optInt("index", 0),
                     text = item.optString("text", ""),
                     tag = displayRole(
-                        item.optString("roleName", ""),
+                        firstNonBlank(
+                            item.optString("displayRoleName", ""),
+                            item.optString("roleName", ""),
+                            item.optString("tag", "")
+                        ),
                         item.optString("tag", "")
                     ),
                     voice = displayVoice(
-                        item.optString("actualVoice", "")
-                            .ifBlank { item.optString("voice", "") }
+                        firstNonBlank(
+                            item.optString("displayVoice", ""),
+                            item.optString("actualVoice", ""),
+                            item.optString("voice", "")
+                        )
                     ),
                     status = item.optString("status", "ready"),
                     emotion = item.optString("emotion", ""),
