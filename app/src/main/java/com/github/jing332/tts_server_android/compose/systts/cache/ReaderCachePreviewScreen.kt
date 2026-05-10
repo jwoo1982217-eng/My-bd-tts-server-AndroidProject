@@ -149,8 +149,10 @@ fun ReaderCachePreviewScreen(
 
     val scrollBehaviour = TopAppBarDefaults.pinnedScrollBehavior()
     val visibleLogs = when (selectedTab) {
-        PreviewTab.RuleLog -> previewLogs.filter { it.source != "缓存队列" }
-        PreviewTab.CacheLog -> previewLogs.filter { it.source == "缓存队列" }
+        PreviewTab.RuleLog -> previewLogs.filter { it.source == "朗读规则" }
+        PreviewTab.CacheLog -> previewLogs.filter {
+            it.source == "缓存队列" || it.source == "有声书导出" || it.source == "角色管理同步"
+        }
         PreviewTab.Script, PreviewTab.ReadLog -> emptyList()
     }
 
@@ -302,6 +304,20 @@ fun ReaderCachePreviewScreen(
                                             reload()
                                         }
                                     }
+                                },
+                                onExportMp3 = {
+                                    context.toast("开始导出本章 MP3")
+                                    AudioCacheFactory.exportChapterMp3(
+                                        context = context,
+                                        bookKey = chapter.bookKey,
+                                        chapterKey = chapter.chapterKey
+                                    ) { ok ->
+                                        scope.launch {
+                                            context.toast(if (ok) "本章 MP3 已生成" else "导出失败，查看本章状态")
+                                            reload()
+                                            reloadLogs()
+                                        }
+                                    }
                                 }
                             )
                         }
@@ -352,17 +368,27 @@ private fun PreviewTabs(
     selectedTab: PreviewTab,
     onSelected: (PreviewTab) -> Unit,
 ) {
-    Row(
+    Column(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        listOf(PreviewTab.Script, PreviewTab.RuleLog).forEach { tab ->
-            AssistChip(
-                onClick = { onSelected(tab) },
-                label = { Text(tab.title) },
-                modifier = Modifier.weight(1f),
-                enabled = selectedTab != tab
-            )
+        listOf(
+            listOf(PreviewTab.Script, PreviewTab.RuleLog),
+            listOf(PreviewTab.CacheLog, PreviewTab.ReadLog)
+        ).forEach { row ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                row.forEach { tab ->
+                    AssistChip(
+                        onClick = { onSelected(tab) },
+                        label = { Text(tab.title) },
+                        modifier = Modifier.weight(1f),
+                        enabled = selectedTab != tab
+                    )
+                }
+            }
         }
     }
 }
@@ -422,6 +448,7 @@ private fun ChapterCard(
     onClear: () -> Unit,
     onRetry: () -> Unit,
     onRetryItem: (AudioCacheFactory.PreviewItem) -> Unit,
+    onExportMp3: () -> Unit,
 ) {
     ElevatedCard(
         modifier = Modifier.fillMaxWidth()
@@ -453,6 +480,24 @@ private fun ChapterCard(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    if (chapter.mp3Status.isNotBlank()) {
+                        Text(
+                            text = buildString {
+                                append("MP3 ")
+                                append(chapter.mp3Status)
+                                if (chapter.mp3SizeBytes > 0) {
+                                    append(" · ")
+                                    append(chapter.mp3SizeBytes.sizeToReadable())
+                                }
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (chapter.mp3Status == "failed") {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                    }
                 }
                 StatusChip(chapter.status)
             }
@@ -473,6 +518,22 @@ private fun ChapterCard(
                     Spacer(Modifier.width(6.dp))
                     Text("清空本章")
                 }
+                OutlinedButton(
+                    enabled = chapter.items.isNotEmpty() &&
+                        chapter.readyCount == chapter.items.size &&
+                        chapter.status == "ready",
+                    onClick = onExportMp3
+                ) {
+                    Text(if (chapter.mp3Status == "ready") "重新导出MP3" else "导出MP3")
+                }
+            }
+
+            if (chapter.mp3Error.isNotBlank()) {
+                Text(
+                    text = chapter.mp3Error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
             }
 
             AnimatedVisibility(visible = expanded) {

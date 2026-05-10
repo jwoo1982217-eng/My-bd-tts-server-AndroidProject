@@ -7,6 +7,7 @@ import android.database.MatrixCursor
 import android.net.Uri
 import android.os.Bundle
 import com.github.jing332.tts_server_android.service.LegadoBridgeKeepAliveService
+import com.github.jing332.tts_server_android.service.systts.help.AudiobookGenerationBridge
 
 class LegadoBridgeProvider : ContentProvider() {
 
@@ -38,6 +39,18 @@ class LegadoBridgeProvider : ContentProvider() {
                 }
             }
 
+            "prepareAudiobookGeneration" -> AudiobookGenerationBridge.prepare(ctx, extras)
+
+            "appendAudiobookGenerationChapter" -> AudiobookGenerationBridge.appendChapter(arg, extras)
+
+            "startAudiobookGeneration" -> AudiobookGenerationBridge.start(ctx, arg, extras)
+
+            "submitAudiobookGeneration" -> AudiobookGenerationBridge.submit(ctx, extras)
+
+            "queryAudiobookGeneration" -> AudiobookGenerationBridge.query(arg, extras)
+
+            "cancelAudiobookGeneration" -> AudiobookGenerationBridge.cancel(arg, extras)
+
             else -> {
                 Bundle().apply {
                     putBoolean("ok", false)
@@ -55,7 +68,7 @@ class LegadoBridgeProvider : ContentProvider() {
         sortOrder: String?
     ): Cursor {
         val cursor = MatrixCursor(arrayOf("ok", "package", "time"))
-        cursor.addRow(arrayOf(1, context?.packageName ?: "", System.currentTimeMillis()))
+        cursor.addRow(arrayOf<Any>(1, context?.packageName ?: "", System.currentTimeMillis()))
         return cursor
     }
 

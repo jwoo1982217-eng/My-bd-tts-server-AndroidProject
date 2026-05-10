@@ -1,6 +1,7 @@
 package com.github.jing332.tts_server_android.service.systts.help
 
 import android.content.Context
+import android.os.Environment
 import com.github.jing332.common.utils.StringUtils
 import com.github.jing332.database.dbm
 import com.github.jing332.database.entities.SpeechRule
@@ -8,6 +9,7 @@ import com.github.jing332.database.entities.systts.AudioParams
 import com.github.jing332.database.entities.systts.TtsConfigurationDTO
 import com.github.jing332.database.entities.systts.source.PluginTtsSource
 import com.github.jing332.tts.MixSynthesizer
+import com.github.jing332.tts.SynthesizerConfig
 import com.github.jing332.tts.SynthesizerContext
 import com.github.jing332.tts.synthesizer.RequestPayload
 import com.github.jing332.tts.synthesizer.SystemParams
@@ -21,6 +23,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -28,6 +32,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.OutputStream
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -72,6 +77,10 @@ object AudioCacheFactory {
         val failedCount: Int,
         val sizeBytes: Long,
         val updatedAt: Long,
+        val mp3Status: String,
+        val mp3Path: String,
+        val mp3SizeBytes: Long,
+        val mp3Error: String,
     )
 
     data class PreviewItem(
@@ -93,6 +102,23 @@ object AudioCacheFactory {
         val message: String,
     )
 
+    data class AudiobookChapterInput(
+        val chapterIndex: Int,
+        val chapterTitle: String,
+        val chapterText: String,
+    )
+
+    data class AudiobookGenerationProgress(
+        val status: String,
+        val message: String,
+        val totalChapters: Int,
+        val readyChapters: Int,
+        val failedChapters: Int,
+        val totalItems: Int,
+        val readyItems: Int,
+        val failedItems: Int,
+    )
+
     private data class QueueItem(
         val index: Int,
         val text: String,
@@ -110,6 +136,13 @@ object AudioCacheFactory {
         val tag: String,
         val voice: String,
         val configId: Long,
+    )
+
+    private data class SynthesizedAudio(
+        val sampleRate: Int,
+        val pcmBytes: ByteArray,
+        val sourceBytes: ByteArray?,
+        val sourceFormat: String,
     )
 
     fun getCachedAudio(context: Context, text: String): CachedAudio? {
@@ -294,7 +327,13 @@ object AudioCacheFactory {
     }
 
     fun clearChapter(context: Context, bookKey: String, chapterKey: String): Boolean {
-        return chapterDir(context, bookKey, chapterKey).deleteRecursively()
+        val dir = chapterDir(context, bookKey, chapterKey)
+        readManifest(dir)
+            ?.optJSONObject("chapterMp3")
+            ?.optString("path", "")
+            ?.takeIf { it.isNotBlank() }
+            ?.let { runCatching { File(it).delete() } }
+        return dir.deleteRecursively()
     }
 
     fun clearAll(context: Context): Boolean {
@@ -304,7 +343,7 @@ object AudioCacheFactory {
     fun appendPreviewLog(context: Context, source: String, message: String) {
         runCatching {
             val file = previewLogFile(context)
-            if (!file.parentFile.exists()) file.parentFile.mkdirs()
+            file.parentFile?.let { if (!it.exists()) it.mkdirs() }
 
             val time = SimpleDateFormat(
                 "yyyy-MM-dd HH:mm:ss.SSS",
@@ -346,7 +385,7 @@ object AudioCacheFactory {
     fun clearPreviewLogs(context: Context): Boolean {
         return runCatching {
             val file = previewLogFile(context)
-            if (!file.parentFile.exists()) file.parentFile.mkdirs()
+            file.parentFile?.let { if (!it.exists()) it.mkdirs() }
             file.writeText("", Charsets.UTF_8)
             true
         }.getOrDefault(false)
@@ -359,11 +398,6 @@ object AudioCacheFactory {
         liveManager: MixSynthesizer?,
         onFinished: ((Boolean) -> Unit)? = null,
     ) {
-        if (liveManager == null) {
-            onFinished?.invoke(false)
-            return
-        }
-
         scope.launch {
             val ok = runCatching {
                 cacheWorkMutex.withLock {
@@ -386,11 +420,6 @@ object AudioCacheFactory {
         liveManager: MixSynthesizer?,
         onFinished: ((Boolean) -> Unit)? = null,
     ) {
-        if (liveManager == null) {
-            onFinished?.invoke(false)
-            return
-        }
-
         scope.launch {
             val ok = runCatching {
                 cacheWorkMutex.withLock {
@@ -411,12 +440,422 @@ object AudioCacheFactory {
         warming.set(false)
     }
 
+    fun exportChapterMp3(
+        context: Context,
+        bookKey: String,
+        chapterKey: String,
+        onFinished: ((Boolean) -> Unit)? = null,
+    ) {
+        scope.launch {
+            val ok = runCatching {
+                cacheWorkMutex.withLock {
+                    exportChapterMp3Internal(context, bookKey, chapterKey)
+                }
+            }.onFailure {
+                logger.warn(it) { "export chapter mp3 failed" }
+                appendPreviewLog(
+                    context = context,
+                    source = "有声书导出",
+                    message = "导出失败｜$chapterKey｜${it.message.orEmpty()}"
+                )
+            }.getOrDefault(false)
+
+            onFinished?.invoke(ok)
+        }
+    }
+
+    suspend fun generateAudiobookChapters(
+        context: Context,
+        bookName: String,
+        bookUrl: String,
+        chapters: List<AudiobookChapterInput>,
+        onProgress: ((AudiobookGenerationProgress) -> Unit)? = null,
+        isCancelled: (() -> Boolean)? = null,
+    ): AudiobookGenerationProgress {
+        val cleanChapters = chapters.filter { it.chapterText.isNotBlank() }
+        if (cleanChapters.isEmpty()) {
+            return AudiobookGenerationProgress(
+                status = "failed",
+                message = "没有可生成的章节正文",
+                totalChapters = 0,
+                readyChapters = 0,
+                failedChapters = 0,
+                totalItems = 0,
+                readyItems = 0,
+                failedItems = 0
+            ).also { onProgress?.invoke(it) }
+        }
+
+        return cacheWorkMutex.withLock {
+            val appContext = context.applicationContext
+            val manager = getBackgroundManager(appContext, null)
+            val bookKey = bookUrl.ifBlank { bookName }.md5()
+
+            fun push(status: String, message: String): AudiobookGenerationProgress {
+                return generationProgress(
+                    context = appContext,
+                    bookKey = bookKey,
+                    chapters = cleanChapters,
+                    status = status,
+                    message = message
+                ).also { onProgress?.invoke(it) }
+            }
+
+            appendPreviewLog(
+                context = appContext,
+                source = "缓存队列",
+                message = "有声书生成开始｜书=${bookName.ifBlank { bookKey }}｜章节=${cleanChapters.size}｜按章节顺序缓存并导出MP3"
+            )
+            push("pending", "TTS 已接收 ${cleanChapters.size} 章，等待生成")
+
+            cleanChapters.forEachIndexed { position, input ->
+                currentCoroutineContext().ensureActive()
+                if (isCancelled?.invoke() == true) {
+                    return@withLock push("cancelled", "有声书生成已取消")
+                }
+
+                val chapter = JSONObject()
+                    .put("ok", true)
+                    .put("bookName", bookName)
+                    .put("bookUrl", bookUrl)
+                    .put("chapterIndex", input.chapterIndex)
+                    .put("chapterTitle", input.chapterTitle)
+                    .put("chapterText", input.chapterText)
+                    .put("text", input.chapterText)
+
+                appendPreviewLog(
+                    context = appContext,
+                    source = "缓存队列",
+                    message = "有声书章节开始｜${position + 1}/${cleanChapters.size}｜${input.chapterIndex} ${input.chapterTitle}"
+                )
+                push(
+                    status = "analyzing",
+                    message = "正在生成第 ${position + 1}/${cleanChapters.size} 章：${input.chapterTitle.ifBlank { input.chapterIndex.toString() }}"
+                )
+
+                cacheChapter(
+                    context = appContext,
+                    manager = manager,
+                    bookKey = bookKey,
+                    bookName = bookName,
+                    chapter = chapter,
+                    onProgress = {
+                        push(
+                            status = "caching_audio",
+                            message = "正在缓存并导出第 ${position + 1}/${cleanChapters.size} 章：${input.chapterTitle.ifBlank { input.chapterIndex.toString() }}"
+                        )
+                    }
+                )
+
+                appendPreviewLog(
+                    context = appContext,
+                    source = "缓存队列",
+                    message = "有声书章节完成｜${position + 1}/${cleanChapters.size}｜${input.chapterIndex} ${input.chapterTitle}"
+                )
+                push(
+                    status = "caching_audio",
+                    message = "已处理第 ${position + 1}/${cleanChapters.size} 章"
+                )
+            }
+
+            val final = generationProgress(
+                context = appContext,
+                bookKey = bookKey,
+                chapters = cleanChapters,
+                status = "",
+                message = ""
+            )
+            val finalStatus = when {
+                final.failedChapters > 0 -> "failed"
+                final.readyChapters >= final.totalChapters -> "ready"
+                else -> "caching_audio"
+            }
+            val message = when (finalStatus) {
+                "ready" -> "有声书缓存已生成：${final.readyChapters}/${final.totalChapters} 章"
+                "failed" -> "有声书生成完成但有失败章节：失败 ${final.failedChapters} 章"
+                else -> "有声书生成仍有未完成章节"
+            }
+            final.copy(status = finalStatus, message = message).also {
+                appendPreviewLog(
+                    context = appContext,
+                    source = "缓存队列",
+                    message = "有声书生成结束｜status=${it.status}｜章节=${it.readyChapters}/${it.totalChapters}｜句子=${it.readyItems}/${it.totalItems}"
+                )
+                onProgress?.invoke(it)
+            }
+        }
+    }
+
+    private fun exportChapterMp3Internal(
+        context: Context,
+        bookKey: String,
+        chapterKey: String,
+    ): Boolean {
+        val dir = chapterDir(context, bookKey, chapterKey)
+        val manifest = readManifest(dir) ?: return false
+        val queue = readQueue(dir)
+        val items = manifest.optJSONArray("items") ?: JSONArray()
+        val configFingerprint = manifest.optString("configFingerprint", currentConfigFingerprint())
+        val chapterTitle = manifest.optString("chapterTitle", "")
+        val chapterIndex = manifest.optInt("chapterIndex", -1)
+
+        updateChapterMp3State(dir, "exporting", error = "")
+
+        val exportItems = if (queue.isNotEmpty()) {
+            queue.sortedBy { it.index }.map { queueItem ->
+                findReadyMp3Item(items, queueItem, configFingerprint)
+                    ?: return failChapterMp3Export(
+                        dir = dir,
+                        context = context,
+                        chapterTitle = chapterTitle,
+                        error = "第 ${queueItem.index} 句还没有可导出的 MP3 源音频，请先重试或重新缓存本章。"
+                    )
+            }
+        } else {
+            readyMp3Items(items)
+        }
+
+        if (exportItems.isEmpty()) {
+            return failChapterMp3Export(
+                dir = dir,
+                context = context,
+                chapterTitle = chapterTitle,
+                error = "本章没有可导出的 MP3 源音频。"
+            )
+        }
+
+        val outDir = chapterMp3Dir(context, manifest.optString("bookName", bookKey))
+        if (!outDir.exists()) outDir.mkdirs()
+        val outFile = File(
+            outDir,
+            "${chapterIndex.toString().padStart(4, '0')}_${chapterTitle.safeFileName().ifBlank { "未命名章节" }}.mp3"
+        )
+        val tempFile = File(outFile.parentFile, "${outFile.name}.tmp")
+
+        runCatching {
+            tempFile.outputStream().use { output ->
+                exportItems.forEachIndexed { index, item ->
+                    val file = File(item.optString("sourceAudioPath", ""))
+                    copyMp3Payload(file.readBytes(), output, keepLeadingTags = index == 0)
+                }
+            }
+            if (tempFile.length() <= 0) error("导出文件为空")
+            if (outFile.exists()) outFile.delete()
+            if (!tempFile.renameTo(outFile)) {
+                tempFile.copyTo(outFile, overwrite = true)
+                tempFile.delete()
+            }
+        }.onFailure {
+            tempFile.delete()
+            return failChapterMp3Export(
+                dir = dir,
+                context = context,
+                chapterTitle = chapterTitle,
+                error = it.message ?: "写入章节 MP3 失败"
+            )
+        }
+
+        val latest = readManifest(dir) ?: manifest
+        latest.put(
+            "chapterMp3",
+            JSONObject()
+                .put("status", "ready")
+                .put("path", outFile.absolutePath)
+                .put("sizeBytes", outFile.length())
+                .put("itemCount", exportItems.size)
+                .put("updatedAt", System.currentTimeMillis())
+        )
+        latest.put("updatedAt", System.currentTimeMillis())
+        writeManifest(dir, latest)
+
+        appendPreviewLog(
+            context = context,
+            source = "有声书导出",
+            message = "导出完成｜$chapterIndex $chapterTitle｜${outFile.name}｜${outFile.length()} bytes"
+        )
+        return true
+    }
+
+    private fun failChapterMp3Export(
+        dir: File,
+        context: Context,
+        chapterTitle: String,
+        error: String,
+    ): Boolean {
+        updateChapterMp3State(dir, "failed", error = error)
+        appendPreviewLog(
+            context = context,
+            source = "有声书导出",
+            message = "导出失败｜$chapterTitle｜$error"
+        )
+        return false
+    }
+
+    private fun updateChapterMp3State(
+        dir: File,
+        status: String,
+        error: String,
+    ) {
+        val manifest = readManifest(dir) ?: return
+        val old = manifest.optJSONObject("chapterMp3") ?: JSONObject()
+        old.put("status", status)
+        old.put("updatedAt", System.currentTimeMillis())
+        if (error.isNotBlank()) old.put("error", error) else old.remove("error")
+        manifest.put("chapterMp3", old)
+        manifest.put("updatedAt", System.currentTimeMillis())
+        writeManifest(dir, manifest)
+    }
+
+    private fun findReadyMp3Item(
+        items: JSONArray,
+        queueItem: QueueItem,
+        configFingerprint: String,
+    ): JSONObject? {
+        val textHash = queueItem.text.md5()
+        for (i in 0 until items.length()) {
+            val item = items.optJSONObject(i) ?: continue
+            if (item.optInt("index", -1) != queueItem.index && item.optString("textHash") != textHash) continue
+            if (item.optString("configFingerprint") != configFingerprint) continue
+            if (!item.matchesQueueItem(queueItem)) continue
+            if (!item.hasUsableMp3Source()) continue
+            return item
+        }
+        return null
+    }
+
+    private fun readyMp3Items(items: JSONArray): List<JSONObject> {
+        return (0 until items.length())
+            .mapNotNull { items.optJSONObject(it) }
+            .filter { it.hasUsableMp3Source() }
+            .sortedBy { it.optInt("index", 0) }
+    }
+
+    private fun JSONObject.hasUsableMp3Source(): Boolean {
+        if (optString("status", "ready") != "ready") return false
+        if (optString("sourceAudioFormat", "") != "mp3") return false
+        val file = File(optString("sourceAudioPath", ""))
+        return file.exists() && file.length() > 0
+    }
+
+    private fun generationProgress(
+        context: Context,
+        bookKey: String,
+        chapters: List<AudiobookChapterInput>,
+        status: String,
+        message: String,
+    ): AudiobookGenerationProgress {
+        var readyChapters = 0
+        var failedChapters = 0
+        var totalItems = 0
+        var readyItems = 0
+        var failedItems = 0
+
+        chapters.forEach { chapter ->
+            val dir = chapterDir(context, bookKey, chapterKey(bookKey, chapter.chapterIndex))
+            val manifest = readManifest(dir)
+            val queue = readQueue(dir)
+
+            val queueCount = queue.size.takeIf { it > 0 }
+                ?: manifest?.optInt("queueSize", 0)
+                ?: 0
+            totalItems += queueCount
+            readyItems += queue.count { it.raw.optString("status") == "ready" }
+            failedItems += queue.count {
+                it.raw.optString("status") == "failed" || it.raw.optString("error").isNotBlank()
+            }
+
+            val manifestStatus = manifest?.optString("status", "").orEmpty()
+            val chapterMp3 = manifest?.optJSONObject("chapterMp3")
+            val mp3Status = chapterMp3?.optString("status", "").orEmpty()
+            when {
+                manifestStatus == "ready" && mp3Status == "ready" -> readyChapters += 1
+                manifestStatus == "failed" || mp3Status == "failed" -> failedChapters += 1
+            }
+        }
+
+        return AudiobookGenerationProgress(
+            status = status.ifBlank {
+                when {
+                    failedChapters > 0 -> "failed"
+                    readyChapters >= chapters.size && chapters.isNotEmpty() -> "ready"
+                    else -> "caching_audio"
+                }
+            },
+            message = message,
+            totalChapters = chapters.size,
+            readyChapters = readyChapters,
+            failedChapters = failedChapters,
+            totalItems = totalItems,
+            readyItems = readyItems,
+            failedItems = failedItems
+        )
+    }
+
+    private fun copyMp3Payload(
+        bytes: ByteArray,
+        output: OutputStream,
+        keepLeadingTags: Boolean,
+    ) {
+        if (bytes.isEmpty()) return
+
+        val end = bytes.stripTrailingId3v1End()
+        var start = if (keepLeadingTags) 0 else bytes.skipLeadingId3v2()
+        if (!keepLeadingTags) {
+            start = bytes.findMp3FrameStart(start).takeIf { it >= 0 } ?: start
+        }
+        if (start < end) {
+            output.write(bytes, start, end - start)
+        }
+    }
+
+    private fun ByteArray.looksLikeMp3(): Boolean {
+        if (size >= 3 && this[0] == 'I'.code.toByte() && this[1] == 'D'.code.toByte() && this[2] == '3'.code.toByte()) {
+            return true
+        }
+        return findMp3FrameStart(0).let { it in 0..1024 }
+    }
+
+    private fun ByteArray.skipLeadingId3v2(): Int {
+        if (size < 10) return 0
+        if (this[0] != 'I'.code.toByte() || this[1] != 'D'.code.toByte() || this[2] != '3'.code.toByte()) {
+            return 0
+        }
+        val tagSize =
+            ((this[6].toInt() and 0x7F) shl 21) or
+                ((this[7].toInt() and 0x7F) shl 14) or
+                ((this[8].toInt() and 0x7F) shl 7) or
+                (this[9].toInt() and 0x7F)
+        val hasFooter = (this[5].toInt() and 0x10) != 0
+        return (10 + tagSize + if (hasFooter) 10 else 0).coerceAtMost(size)
+    }
+
+    private fun ByteArray.stripTrailingId3v1End(): Int {
+        if (size < 128) return size
+        val start = size - 128
+        return if (
+            this[start] == 'T'.code.toByte() &&
+            this[start + 1] == 'A'.code.toByte() &&
+            this[start + 2] == 'G'.code.toByte()
+        ) start else size
+    }
+
+    private fun ByteArray.findMp3FrameStart(fromIndex: Int): Int {
+        val start = fromIndex.coerceAtLeast(0)
+        for (i in start until size - 1) {
+            if ((this[i].toInt() and 0xFF) == 0xFF && (this[i + 1].toInt() and 0xE0) == 0xE0) {
+                return i
+            }
+        }
+        return -1
+    }
+
     private suspend fun cacheChapter(
         context: Context,
         manager: MixSynthesizer,
         bookKey: String,
         bookName: String,
         chapter: JSONObject,
+        onProgress: (() -> Unit)? = null,
     ) {
         val chapterKey = chapterKey(bookKey, chapter.optInt("chapterIndex", -1))
         val dir = chapterDir(context, bookKey, chapterKey)
@@ -435,6 +874,7 @@ object AudioCacheFactory {
             manifest.put("error", "朗读规则没有生成台词本队列")
             manifest.put("updatedAt", System.currentTimeMillis())
             writeManifest(dir, manifest)
+            onProgress?.invoke()
             return
         }
 
@@ -444,11 +884,13 @@ object AudioCacheFactory {
         manifest.put("configFingerprint", configFingerprint)
         manifest.put("updatedAt", System.currentTimeMillis())
         writeManifest(dir, manifest)
+        onProgress?.invoke()
 
         manifest.put("status", "caching_audio")
         manifest.put("configFingerprint", configFingerprint)
         manifest.put("updatedAt", System.currentTimeMillis())
         writeManifest(dir, manifest)
+        onProgress?.invoke()
 
         appendPreviewLog(
             context = context,
@@ -460,6 +902,7 @@ object AudioCacheFactory {
             val latestManifest = readManifest(dir) ?: manifest
             if (hasItem(latestManifest, item, configFingerprint)) {
                 updateQueueItem(dir, item.index, "ready")
+                onProgress?.invoke()
                 continue
             }
 
@@ -472,6 +915,7 @@ object AudioCacheFactory {
             val config = resolveTtsConfig(manager, item)
             if (config == null) {
                 updateQueueItem(dir, item.index, "failed", "No matching TTS config")
+                onProgress?.invoke()
                 appendPreviewLog(
                     context = context,
                     source = "缓存队列",
@@ -483,6 +927,7 @@ object AudioCacheFactory {
             val audio = synthesizeQueueItemToPcm(manager, item, config)
             if (audio == null) {
                 updateQueueItem(dir, item.index, "failed", "TTS request failed")
+                onProgress?.invoke()
                 appendPreviewLog(
                     context = context,
                     source = "缓存队列",
@@ -497,22 +942,28 @@ object AudioCacheFactory {
                 chapter = chapter,
                 index = item.index,
                 text = item.text,
-                sampleRate = audio.first,
-                bytes = audio.second,
+                sampleRate = audio.sampleRate,
+                bytes = audio.pcmBytes,
+                sourceBytes = audio.sourceBytes,
+                sourceFormat = audio.sourceFormat,
                 queueItem = item,
                 status = "caching_audio"
             )
             updateQueueItem(dir, item.index, "ready")
+            onProgress?.invoke()
         }
 
         val latest = readManifest(dir) ?: manifest
         val latestQueue = readQueue(dir)
-        latest.put(
-            "status",
-            if (latestQueue.any { it.raw.optString("status") == "failed" }) "failed" else "ready"
-        )
+        val finalStatus = if (latestQueue.any { it.raw.optString("status") == "failed" }) "failed" else "ready"
+        latest.put("status", finalStatus)
         latest.remove("error")
         writeManifest(dir, latest)
+
+        if (finalStatus == "ready") {
+            exportChapterMp3Internal(context, bookKey, chapterKey)
+        }
+        onProgress?.invoke()
     }
 
     private suspend fun retryFailedItemsInternal(
@@ -576,8 +1027,10 @@ object AudioCacheFactory {
                 chapter = chapter,
                 index = item.index,
                 text = item.text,
-                sampleRate = audio.first,
-                bytes = audio.second,
+                sampleRate = audio.sampleRate,
+                bytes = audio.pcmBytes,
+                sourceBytes = audio.sourceBytes,
+                sourceFormat = audio.sourceFormat,
                 queueItem = item,
                 status = "caching_audio"
             )
@@ -585,8 +1038,12 @@ object AudioCacheFactory {
         }
 
         val latest = readManifest(dir) ?: manifest
-        latest.put("status", if (readQueue(dir).any { it.raw.optString("status") == "failed" }) "failed" else "ready")
+        val finalStatus = if (readQueue(dir).any { it.raw.optString("status") == "failed" }) "failed" else "ready"
+        latest.put("status", finalStatus)
         writeManifest(dir, latest)
+        if (finalStatus == "ready") {
+            exportChapterMp3Internal(context, bookKey, chapterKey)
+        }
         return true
     }
 
@@ -594,17 +1051,22 @@ object AudioCacheFactory {
         manager: MixSynthesizer,
         item: QueueItem,
         config: TtsConfiguration,
-    ): Pair<Int, ByteArray>? {
+    ): SynthesizedAudio? {
         val out = ByteArrayOutputStream()
         val sampleRate = config.audioFormat.sampleRate.coerceAtLeast(8000)
         val request = RequestPayload(SystemParams(text = item.text), config)
+        var sourceBytes: ByteArray? = null
+        var sourceFormat = ""
 
         var ok = false
         manager.ttsRequester.request(request.params, request.config)
             .onSuccess { resp ->
                 val stream = resp.stream ?: return@onSuccess
+                val rawBytes = stream.use { it.readBytes() }
+                sourceBytes = rawBytes
+                sourceFormat = if (rawBytes.looksLikeMp3()) "mp3" else ""
                 manager.streamProcessor.processStream(
-                    ins = stream,
+                    ins = rawBytes.inputStream(),
                     request = request,
                     targetSampleRate = sampleRate,
                     callback = { pcm ->
@@ -624,26 +1086,36 @@ object AudioCacheFactory {
 
         return out.toByteArray()
             .takeIf { ok && it.isNotEmpty() }
-            ?.let { sampleRate to it }
+            ?.let {
+                SynthesizedAudio(
+                    sampleRate = sampleRate,
+                    pcmBytes = it,
+                    sourceBytes = sourceBytes,
+                    sourceFormat = sourceFormat
+                )
+            }
     }
 
     private suspend fun getBackgroundManager(
         context: Context,
-        liveManager: MixSynthesizer,
+        liveManager: MixSynthesizer?,
     ): MixSynthesizer {
         val current = backgroundManager
         if (current != null && current.isInitialized) return current
 
-        val cfg = liveManager.context.cfg.copy(
+        val cfg = liveManager?.context?.cfg?.copy(
             bgmEnabled = { false },
             streamPlayEnabled = SysTtsConfig::isStreamPlayModeEnabled,
-            audioParams = {
-                AudioParams(
-                    speed = SysTtsConfig.audioParamsSpeed,
-                    volume = SysTtsConfig.audioParamsVolume,
-                    pitch = SysTtsConfig.audioParamsPitch
-                )
-            }
+            audioParams = { currentAudioParams() }
+        ) ?: SynthesizerConfig(
+            requestTimeout = SysTtsConfig::requestTimeout,
+            maxRetryTimes = SysTtsConfig::maxRetryCount,
+            streamPlayEnabled = SysTtsConfig::isStreamPlayModeEnabled,
+            silenceSkipEnabled = SysTtsConfig::isSkipSilentAudio,
+            bgmShuffleEnabled = SysTtsConfig::isBgmShuffleEnabled,
+            bgmVolume = SysTtsConfig::bgmVolume,
+            bgmEnabled = { false },
+            audioParams = { currentAudioParams() }
         )
 
         return MixSynthesizer(
@@ -657,6 +1129,14 @@ object AudioCacheFactory {
             init()
             backgroundManager = this
         }
+    }
+
+    private fun currentAudioParams(): AudioParams {
+        return AudioParams(
+            speed = SysTtsConfig.audioParamsSpeed,
+            volume = SysTtsConfig.audioParamsVolume,
+            pitch = SysTtsConfig.audioParamsPitch
+        )
     }
 
     private fun prepareQueue(
@@ -1026,6 +1506,8 @@ object AudioCacheFactory {
         text: String,
         sampleRate: Int,
         bytes: ByteArray,
+        sourceBytes: ByteArray? = null,
+        sourceFormat: String = "",
         queueItem: QueueItem? = null,
         status: String,
     ) {
@@ -1037,11 +1519,17 @@ object AudioCacheFactory {
         val audioFile = File(dir, "${index}_${text.md5()}_${configFingerprint.take(12)}.pcm")
         audioFile.writeBytes(bytes)
 
+        val sourceAudioFile = sourceBytes
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { rawBytes ->
+                val ext = if (sourceFormat == "mp3") "mp3" else "audio"
+                File(dir, "${index}_${text.md5()}_${configFingerprint.take(12)}.$ext")
+                    .also { it.writeBytes(rawBytes) }
+            }
+
         val manifest = readManifest(dir) ?: newManifest(bookName, chapter, chapterKey)
         val items = manifest.optJSONArray("items") ?: JSONArray().also { manifest.put("items", it) }
-        upsertItem(
-            items = items,
-            item = JSONObject()
+        val item = JSONObject()
                 .put("index", index)
                 .put("text", text)
                 .put("textHash", text.md5())
@@ -1057,7 +1545,11 @@ object AudioCacheFactory {
                 .put("path", audioFile.absolutePath)
                 .put("status", "ready")
                 .put("updatedAt", System.currentTimeMillis())
-        )
+        if (sourceAudioFile != null) {
+            item.put("sourceAudioPath", sourceAudioFile.absolutePath)
+            item.put("sourceAudioFormat", sourceFormat.ifBlank { "unknown" })
+        }
+        upsertItem(items = items, item = item)
         manifest.put("bookName", bookName)
         manifest.put("configFingerprint", configFingerprint)
         manifest.put("status", status)
@@ -1158,7 +1650,10 @@ object AudioCacheFactory {
             if (item.optString("configFingerprint") != configFingerprint) continue
             if (!item.matchesQueueItem(queueItem)) continue
             val file = File(item.optString("path", ""))
-            return file.exists() && file.length() > 0
+            val sourcePath = item.optString("sourceAudioPath", "")
+            val sourceFile = File(sourcePath)
+            val sourceReady = sourcePath.isNotBlank() && sourceFile.exists() && sourceFile.length() > 0
+            return file.exists() && file.length() > 0 && sourceReady
         }
         return false
     }
@@ -1346,6 +1841,12 @@ object AudioCacheFactory {
             ?: File(context.filesDir, "reader_audio_cache")
     }
 
+    private fun chapterMp3Dir(context: Context, bookName: String): File {
+        val root = context.getExternalFilesDir(Environment.DIRECTORY_MUSIC)
+            ?: File(context.filesDir, "audiobook_mp3")
+        return File(root, "J.TTS有声书/${bookName.safeFileName().ifBlank { "默认" }}")
+    }
+
     private fun previewLogFile(context: Context): File {
         return File(cacheRoot(context), "cache_factory.log")
     }
@@ -1429,6 +1930,14 @@ object AudioCacheFactory {
         return trim().filterNot { it.isWhitespace() }
     }
 
+    private fun String.safeFileName(): String {
+        return trim()
+            .replace(Regex("""[\\/:*?"<>|\n\r\t]"""), "_")
+            .replace(Regex("""^\.+"""), "")
+            .take(80)
+            .trim()
+    }
+
     private fun previewChapter(bookKey: String, dir: File): PreviewChapter? {
         val manifest = readManifest(dir)
         val queue = readQueue(dir)
@@ -1482,6 +1991,9 @@ object AudioCacheFactory {
 
         val readyCount = queueItems.count { it.status == "ready" }
         val failedCount = queueItems.count { it.status == "failed" || it.error.isNotBlank() }
+        val chapterMp3 = manifest?.optJSONObject("chapterMp3")
+        val mp3Path = chapterMp3?.optString("path", "").orEmpty()
+        val mp3File = File(mp3Path)
 
         return PreviewChapter(
             bookKey = bookKey,
@@ -1501,6 +2013,10 @@ object AudioCacheFactory {
             failedCount = failedCount,
             sizeBytes = dir.sizeBytes(),
             updatedAt = manifest?.optLong("updatedAt", 0L) ?: dir.lastModified(),
+            mp3Status = chapterMp3?.optString("status", "").orEmpty(),
+            mp3Path = mp3Path,
+            mp3SizeBytes = if (mp3File.exists()) mp3File.length() else chapterMp3?.optLong("sizeBytes", 0L) ?: 0L,
+            mp3Error = chapterMp3?.optString("error", "").orEmpty(),
         )
     }
 
