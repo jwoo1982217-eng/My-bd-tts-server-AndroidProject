@@ -75,6 +75,9 @@ import org.burnoutcrew.reorderable.detectReorderAfterLongPress
 import org.burnoutcrew.reorderable.rememberReorderableLazyListState
 import org.burnoutcrew.reorderable.reorderable
 import java.io.File
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import com.github.jing332.tts_server_android.service.systts.help.CacheAudioQueueTranslateSwitch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -966,6 +969,10 @@ DropdownMenuItem(
                 }
 
                 item(key = "project_${group.key}") {
+                    var cacheQueueTranslateEnabled by remember(rule.name) {
+                        mutableStateOf(CacheAudioQueueTranslateSwitch.isEnabled(context, rule.name))
+                    }
+
                     ShadowedDraggableItem(
                         reorderableState = projectReorderState,
                         key = "project_${group.key}"
@@ -1030,9 +1037,35 @@ DropdownMenuItem(
                                 Text("🧩")
                             }
 
-                                                                TextButton(onClick = { modeProjectGroup = group }) {
-                                    Text("🔀")
-                                }
+                                                                Box(
+                                                                    modifier = Modifier
+                                                                        .padding(horizontal = 8.dp, vertical = 8.dp)
+                                                                        .pointerInput(cacheQueueTranslateEnabled) {
+                                                                            detectTapGestures(
+                                                                                onTap = {
+                                                                                    modeProjectGroup = group
+                                                                                },
+                                                                                onLongPress = {
+                                                                                    cacheQueueTranslateEnabled = !cacheQueueTranslateEnabled
+                                                                                    CacheAudioQueueTranslateSwitch.setEnabled(
+                                                                                        context = context,
+                                                                                        ruleName = rule.name,
+                                                                                        enabled = cacheQueueTranslateEnabled
+                                                                                    )
+                                                                                    Toast.makeText(
+                                                                                        context,
+                                                                                        if (cacheQueueTranslateEnabled)
+                                                                                            "已开启缓存队列翻译"
+                                                                                        else
+                                                                                            "已关闭缓存队列翻译",
+                                                                                        Toast.LENGTH_SHORT
+                                                                                    ).show()
+                                                                                }
+                                                                            )
+                                                                        }
+                                                                ) {
+                                                                    Text(if (cacheQueueTranslateEnabled) "🔀✅" else "🔀")
+                                                                }
 
                                 TextButton(
                                     onClick = {

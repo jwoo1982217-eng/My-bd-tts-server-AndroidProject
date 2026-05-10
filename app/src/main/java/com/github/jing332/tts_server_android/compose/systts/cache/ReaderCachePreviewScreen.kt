@@ -45,7 +45,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -64,6 +63,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.input.pointer.pointerInput
 
 private enum class PreviewTab(val title: String) {
     Script("缓存库"),
@@ -91,7 +97,7 @@ fun ReaderCachePreviewScreen(
         scope.launch {
             loading = true
             books = withContext(Dispatchers.IO) {
-                AudioCacheFactory.listPreview(context)
+                AudioCacheFactory.listCurrentReaderPreview(context)
             }
             loading = false
         }
@@ -156,7 +162,7 @@ fun ReaderCachePreviewScreen(
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
-        modifier = Modifier.nestedScroll(scrollBehaviour.nestedScrollConnection),
+        modifier = Modifier,
         topBar = {
             NavTopAppBar(
                 title = { Text("朗读缓存中心") },
@@ -200,19 +206,23 @@ fun ReaderCachePreviewScreen(
             )
         }
     ) { paddingValues ->
-        LazyColumn(
+        Column(
             modifier = Modifier
                 .padding(paddingValues)
-                .fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-            contentPadding = PaddingValues(12.dp)
+                .fillMaxSize()
         ) {
-            item(key = "preview_tabs") {
-                PreviewTabs(
-                    selectedTab = selectedTab,
-                    onSelected = { selectedTab = it }
-                )
-            }
+            PreviewTabs(
+                selectedTab = selectedTab,
+                onSelected = { selectedTab = it }
+            )
+
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                contentPadding = PaddingValues(12.dp)
+            ) {
 
             when (selectedTab) {
                 PreviewTab.Script -> {
@@ -320,7 +330,6 @@ fun ReaderCachePreviewScreen(
                     } else {
                         items(
                             userLogViewModel.logs,
-                            key = { "${it.time}_${it.level}_${it.message}" }
                         ) { log ->
                             UserLogRow(log)
                         }
@@ -337,12 +346,13 @@ fun ReaderCachePreviewScreen(
                             )
                         }
                     } else {
-                        items(visibleLogs, key = { "${it.time}_${it.source}_${it.message}" }) { log ->
-                            LogRow(log)
+                        item {
+                            RuleRuntimeConsole(visibleLogs)
                         }
                     }
                 }
             }
+        }
         }
     }
 }
@@ -368,49 +378,216 @@ private fun PreviewTabs(
 }
 
 @Composable
-private fun UserLogRow(log: LogEntry) {
-    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+private fun RuleRuntimeConsole(logs: List<AudioCacheFactory.PreviewLog>) {
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+
+    var isTouchingLogArea by remember { mutableStateOf(false) }
+    var displayLogs by remember { mutableStateOf(logs) }
+    var pendingLogs by remember { mutableStateOf<List<AudioCacheFactory.PreviewLog>?>(null) }
+
+    // 新日志来了：如果正在按住/滑动，就先缓存；松手后再刷新到 UI
+    LaunchedEffect(logs) {
+        if (isTouchingLogArea) {
+            pendingLogs = logs
+        } else {
+            displayLogs = logs
+            pendingLogs = null
+        }
+    }
+
+    // 松手后，把等待中的最新日志一次性应用
+    LaunchedEffect(isTouchingLogArea) {
+        if (!isTouchingLogArea) {
+            pendingLogs?.let {
+                displayLogs = it
+                pendingLogs = null
+            }
+        }
+    }
+
+    SelectionContainer {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+                .background(MaterialTheme.colorScheme.surface)
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            isTouchingLogArea = event.changes.any { it.pressed }
+                        }
+                    }
+                }
         ) {
-            Text(
-                text = "${log.time} · 朗读执行",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary
-            )
-            Text(
-                text = log.message
+            displayLogs.forEach { log ->
+                val message = log.message
                     .replace("<br>", "\n")
                     .replace("<br/>", "\n")
-                    .replace("<br />", "\n"),
-                style = MaterialTheme.typography.bodySmall
-            )
+                    .replace("<br />", "\n")
+                    .replace("\r", "")
+
+                val copyText = "${log.time} ${log.source}｜$message"
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            clipboard.setText(AnnotatedString(copyText))
+                            context.toast("已复制这一条日志")
+                        }
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 9.dp),
+                        verticalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        Text(
+                            text = "${log.time}  ${log.source}",
+                            style = MaterialTheme.typography.titleSmall.copy(
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold
+                            ),
+                            color = MaterialTheme.colorScheme.primary
+                        )
+
+                        Text(
+                            text = message,
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                                fontSize = 16.sp,
+                                lineHeight = 23.sp
+                            ),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(1.dp)
+                            .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f))
+                    )
+                }
+            }
+
+            if (pendingLogs != null && isTouchingLogArea) {
+                Text(
+                    text = "有新日志，松开后刷新",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(10.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun LogRow(log: AudioCacheFactory.PreviewLog) {
-    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-        Column(
+private fun UserLogRow(log: LogEntry) {
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    val message = log.message
+        .replace("<br>", "\n")
+        .replace("<br/>", "\n")
+        .replace("<br />", "\n")
+    val copyText = "${log.time} · 朗读执行\n$message"
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface)
+            .clickable {
+                clipboard.setText(AnnotatedString(copyText))
+                context.toast("已复制这一条日志")
+            }
+    ) {
+        SelectionContainer {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(7.dp)
+            ) {
+                Text(
+                    text = "${log.time} · 朗读执行",
+                    style = MaterialTheme.typography.titleSmall.copy(
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold
+                    ),
+                    color = MaterialTheme.colorScheme.primary
+                )
+
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodyLarge.copy(
+                        fontSize = 18.sp,
+                        lineHeight = 27.sp
+                    ),
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+        }
+
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            Text(
-                text = "${log.time} · ${log.source}",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary
-            )
-            Text(
-                text = log.message,
-                style = MaterialTheme.typography.bodySmall
-            )
+                .height(1.dp)
+                .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f))
+        )
+    }
+}
+
+@Composable
+private fun LogRow(log: AudioCacheFactory.PreviewLog) {
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    val copyText = "${log.time} · ${log.source}\n${log.message}"
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface)
+            .clickable {
+                clipboard.setText(AnnotatedString(copyText))
+                context.toast("已复制这一条日志")
+            }
+    ) {
+        SelectionContainer {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(7.dp)
+            ) {
+                Text(
+                    text = "${log.time} · ${log.source}",
+                    style = MaterialTheme.typography.titleSmall.copy(
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold
+                    ),
+                    color = MaterialTheme.colorScheme.primary
+                )
+
+                Text(
+                    text = log.message,
+                    style = MaterialTheme.typography.bodyLarge.copy(
+                        fontSize = 18.sp,
+                        lineHeight = 27.sp
+                    ),
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
         }
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f))
+        )
     }
 }
 

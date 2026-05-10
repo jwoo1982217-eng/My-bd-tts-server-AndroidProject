@@ -10,6 +10,7 @@ import com.github.jing332.database.entities.systts.source.PluginTtsSource
 import com.github.jing332.tts.MixSynthesizer
 import com.github.jing332.tts.SynthesizerContext
 import com.github.jing332.tts.synthesizer.RequestPayload
+import com.github.jing332.tts.synthesizer.CacheRequestPayloadRecorder
 import com.github.jing332.tts.synthesizer.SystemParams
 import com.github.jing332.tts.synthesizer.TtsConfiguration
 import com.github.jing332.tts_server_android.conf.SysTtsConfig
@@ -39,6 +40,13 @@ object AudioCacheFactory {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val warming = AtomicBoolean(false)
     private val cacheWorkMutex = Mutex()
+
+    // 开源阅读播放时会一句一句调用系统TTS。
+    // 后台整章缓存只能低频触发，避免每一句都重复启动朗读规则整章分析。
+    private const val WARM_REQUEST_INTERVAL_MS = 2 * 60 * 1000L
+
+    @Volatile
+    private var lastWarmRequestAt: Long = 0L
 
     @Volatile
     private var warmJob: Job? = null
@@ -200,6 +208,15 @@ object AudioCacheFactory {
 
     fun warmCurrentWindow(context: Context, liveManager: MixSynthesizer?) {
         if (liveManager == null) return
+
+        // 正在跑整章缓存时，后续句子只查缓存，不重复启动整章分析。
+        if (warming.get()) return
+
+        // 同一轮播放中限制触发频率：第一次触发后，两分钟内不再重复触发。
+        val now = System.currentTimeMillis()
+        if (now - lastWarmRequestAt < WARM_REQUEST_INTERVAL_MS) return
+        lastWarmRequestAt = now
+
         if (!warming.compareAndSet(false, true)) return
 
         warmJob = scope.launch {
@@ -243,7 +260,7 @@ object AudioCacheFactory {
                             manager = manager,
                             bookKey = bookKey,
                             bookName = bookName,
-                            chapter = chapter
+                            chapter = chapterWithNextChapters(chapter, chapters, i)
                         )
 
                         val status = readManifest(
@@ -300,6 +317,25 @@ object AudioCacheFactory {
             .orEmpty()
     }
 
+
+        fun listCurrentReaderPreview(context: Context): List<PreviewBook> {
+        return runCatching {
+            val window = ReaderChapterBridgeClient.fetchChapterWindowJson()
+            if (!window.optBoolean("ok", false)) {
+                return emptyList()
+            }
+
+            val currentBookName = window.optString("bookName", "")
+            val currentBookKey = window
+                .optString("bookUrl", currentBookName)
+                .md5()
+
+            listPreview(context).filter { it.bookKey == currentBookKey }
+        }.onFailure {
+            logger.warn(it) { "list current reader preview failed" }
+        }.getOrDefault(emptyList())
+    }
+
     fun clearChapter(context: Context, bookKey: String, chapterKey: String): Boolean {
         return chapterDir(context, bookKey, chapterKey).deleteRecursively()
     }
@@ -310,9 +346,6 @@ object AudioCacheFactory {
 
     fun appendPreviewLog(context: Context, source: String, message: String) {
         runCatching {
-            val file = previewLogFile(context)
-            if (!file.parentFile.exists()) file.parentFile.mkdirs()
-
             val time = SimpleDateFormat(
                 "yyyy-MM-dd HH:mm:ss.SSS",
                 Locale.getDefault()
@@ -324,8 +357,29 @@ object AudioCacheFactory {
                 .replace("\r", " ")
                 .trim()
 
-            file.appendText("$time | $safeSource | $safeMessage\n", Charsets.UTF_8)
+            val line = "$time | $safeSource | $safeMessage\n"
+
+            // 1. 原私有缓存日志：App 内部继续使用
+            val file = previewLogFile(context)
+            file.parentFile?.let { parent ->
+                if (!parent.exists()) parent.mkdirs()
+            }
+            file.appendText(line, Charsets.UTF_8)
             trimPreviewLogFile(file)
+
+            // 2. 公开调试日志：给 Termux / 文件管理器直接查看
+            runCatching {
+                val publicFile = File(
+                    "/storage/emulated/0/Android/media/${context.packageName}/jtts-debug/cache_factory.log"
+                )
+                publicFile.parentFile?.let { parent ->
+                    if (!parent.exists()) parent.mkdirs()
+                }
+                publicFile.appendText(line, Charsets.UTF_8)
+                trimPreviewLogFile(publicFile)
+            }.onFailure {
+                logger.warn(it) { "append public cache factory log failed" }
+            }
         }.onFailure {
             logger.warn(it) { "append preview log failed" }
         }
@@ -418,6 +472,59 @@ object AudioCacheFactory {
         warming.set(false)
     }
 
+
+    private fun chapterWithNextChapters(
+        chapter: JSONObject,
+        chapters: JSONArray,
+        currentOffset: Int,
+    ): JSONObject {
+        val out = JSONObject(chapter.toString())
+        val nextArr = JSONArray()
+
+        for (j in currentOffset + 1 until chapters.length()) {
+            val next = chapters.optJSONObject(j) ?: continue
+            val text = next.optString("chapterText", next.optString("text", ""))
+            if (text.isBlank()) continue
+
+            nextArr.put(
+                JSONObject()
+                    .put("ok", next.optBoolean("ok", true))
+                    .put("bookName", next.optString("bookName", ""))
+                    .put("bookUrl", next.optString("bookUrl", ""))
+                    .put("chapterIndex", next.optInt("chapterIndex", -1))
+                    .put("chapterTitle", next.optString("chapterTitle", ""))
+                    .put("chapterText", text)
+                    .put("text", text)
+            )
+        }
+
+        out.put("nextChapters", nextArr)
+        out.put("nextChapterCount", nextArr.length())
+        return out
+    }
+
+    private fun joinNextChapterText(nextChapters: JSONArray): String {
+        val parts = mutableListOf<String>()
+
+        for (i in 0 until nextChapters.length()) {
+            val item = nextChapters.optJSONObject(i) ?: continue
+            val title = item.optString("chapterTitle", "")
+            val text = item.optString("chapterText", item.optString("text", ""))
+            if (text.isBlank()) continue
+
+            parts += buildString {
+                if (title.isNotBlank()) {
+                    append("【")
+                    append(title)
+                    append("】\n")
+                }
+                append(text)
+            }
+        }
+
+        return parts.joinToString("\n\n")
+    }
+
     private suspend fun cacheChapter(
     context: Context,
     manager: MixSynthesizer,
@@ -473,54 +580,86 @@ object AudioCacheFactory {
 
     for (item in queue) {
         val latestManifest = readManifest(dir) ?: manifest
+
+        // 已存在且参数匹配的缓存，直接标记 ready。
+        // 这里不能用 actualItem，因为还没解析 config。
         if (hasItem(latestManifest, item, configFingerprint)) {
-            updateQueueItem(dir, item.index, "ready")
+            updateQueueItem(dir, item.index, "ready", queueItem = item)
             continue
         }
 
-        updateQueueItem(dir, item.index, "caching_audio")
         appendPreviewLog(
             context = context,
             source = "缓存队列",
-            message = "请求音频｜${chapter.optInt("chapterIndex", -1)}#${item.index.toString().padStart(2, '0')}｜${item.tag.ifBlank { "旁白" }}｜${item.voice.ifBlank { "默认音色" }}"
+            message = "请求音频｜${chapter.optInt("chapterIndex", -1)}#${item.index.toString().padStart(2, '0')}｜${item.raw.optString("roleName", item.tag).ifBlank { "旁白" }}｜${item.voice.ifBlank { "规则未给音色" }}"
         )
 
         val config = resolveTtsConfig(manager, item)
         if (config == null) {
-            updateQueueItem(dir, item.index, "failed", "No matching TTS config")
+            updateQueueItem(dir, item.index, "failed", "No matching TTS config", queueItem = item)
             appendPreviewLog(
                 context = context,
                 source = "缓存队列",
-                message = "请求失败｜${chapter.optInt("chapterIndex", -1)}#${item.index.toString().padStart(2, '0')}｜没有匹配音色"
+                message = "请求失败｜${chapter.optInt("chapterIndex", -1)}#${item.index.toString().padStart(2, '0')}｜没有匹配音色｜role=${item.raw.optString("roleName", item.tag)}｜voice=${item.voice}"
             )
             continue
         }
 
-        val audio = synthesizeQueueItemToPcm(manager, item, config)
+        // 关键：把实际使用的 TTS 配置绑定回 QueueItem。
+        // 从这里开始，缓存库、queue.json、manifest、实际请求都必须使用 actualItem。
+        val actualItem = bindActualRequestItem(item, config)
+
+        updateQueueItem(
+            dir = dir,
+            index = actualItem.index,
+            status = "caching_audio",
+            queueItem = actualItem
+        )
+
+        appendPreviewLog(
+            context = context,
+            source = "缓存队列",
+            message = "实际请求参数｜${chapter.optInt("chapterIndex", -1)}#${actualItem.index.toString().padStart(2, '0')}｜role=${actualItem.raw.optString("roleName", actualItem.tag)}｜tag=${actualItem.tag}｜voice=${actualItem.voice}"
+        )
+
+        val audio = synthesizeQueueItemToPcm(manager, actualItem, config)
         if (audio == null) {
-            updateQueueItem(dir, item.index, "failed", "TTS request failed")
+            updateQueueItem(
+                dir = dir,
+                index = actualItem.index,
+                status = "failed",
+                error = "TTS request failed",
+                queueItem = actualItem
+            )
             appendPreviewLog(
                 context = context,
                 source = "缓存队列",
-                message = "请求失败｜${chapter.optInt("chapterIndex", -1)}#${item.index.toString().padStart(2, '0')}｜TTS 请求失败"
+                message = "请求失败｜${chapter.optInt("chapterIndex", -1)}#${actualItem.index.toString().padStart(2, '0')}｜TTS 请求失败｜voice=${actualItem.voice}"
             )
             continue
         }
+
+        val finalItem = bindCacheSynthResult(actualItem, audio.request)
 
         saveItem(
             context = context,
             bookKey = bookKey,
             bookName = realBookName,
             chapter = chapter,
-            index = item.index,
-            text = item.text,
-            sampleRate = audio.first,
-            bytes = audio.second,
-            queueItem = item,
+            index = actualItem.index,
+            text = actualItem.text,
+            sampleRate = audio.sampleRate,
+            bytes = audio.bytes,
+            queueItem = finalItem,
             status = "caching_audio"
         )
 
-        updateQueueItem(dir, item.index, "ready")
+        updateQueueItem(
+            dir = dir,
+            index = finalItem.index,
+            status = "ready",
+            queueItem = finalItem
+        )
     }
 
     val latest = readManifest(dir) ?: manifest
@@ -578,11 +717,16 @@ object AudioCacheFactory {
                 return@forEach
             }
 
-            val audio = synthesizeQueueItemToPcm(manager, item, config)
+            val actualItem = bindActualRequestItem(item, config)
+            updateQueueItem(dir, actualItem.index, "caching_audio", queueItem = actualItem)
+
+            val audio = synthesizeQueueItemToPcm(manager, actualItem, config)
             if (audio == null) {
                 updateQueueItem(dir, item.index, "failed", "TTS request failed")
                 return@forEach
             }
+
+            val finalItem = bindCacheSynthResult(actualItem, audio.request)
 
             val chapter = JSONObject()
                 .put("chapterIndex", manifest.optInt("chapterIndex", -1))
@@ -594,14 +738,14 @@ object AudioCacheFactory {
                 bookKey = bookKey,
                 bookName = manifest.optString("bookName", ""),
                 chapter = chapter,
-                index = item.index,
-                text = item.text,
-                sampleRate = audio.first,
-                bytes = audio.second,
-                queueItem = item,
+                index = finalItem.index,
+                text = finalItem.text,
+                sampleRate = audio.sampleRate,
+                bytes = audio.bytes,
+                queueItem = finalItem,
                 status = "caching_audio"
             )
-            updateQueueItem(dir, item.index, "ready")
+            updateQueueItem(dir, finalItem.index, "ready", queueItem = finalItem)
         }
 
         val latest = readManifest(dir) ?: manifest
@@ -610,42 +754,192 @@ object AudioCacheFactory {
         return true
     }
 
-    private suspend fun synthesizeQueueItemToPcm(
-        manager: MixSynthesizer,
-        item: QueueItem,
-        config: TtsConfiguration,
-    ): Pair<Int, ByteArray>? {
-        val out = ByteArrayOutputStream()
-        val sampleRate = config.audioFormat.sampleRate.coerceAtLeast(8000)
-        val request = RequestPayload(SystemParams(text = item.text), config)
+    
+private fun bindActualRequestItem(item: QueueItem, config: TtsConfiguration): QueueItem {
+    val actualVoice = item.voice.ifBlank { config.source.voice }
+    val actualRoleName = item.raw.optString("roleName", "").ifBlank { item.tag }
+    val actualTag = item.tag.ifBlank { actualRoleName }.ifBlank { actualVoice }
 
-        var ok = false
-        manager.ttsRequester.request(request.params, request.config)
-            .onSuccess { resp ->
-                val stream = resp.stream ?: return@onSuccess
-                manager.streamProcessor.processStream(
-                    ins = stream,
-                    request = request,
-                    targetSampleRate = sampleRate,
-                    callback = { pcm ->
-                        if (pcm.hasRemaining()) {
-                            val bytes = ByteArray(pcm.remaining())
-                            pcm.get(bytes)
-                            out.write(bytes)
-                        }
-                    }
-                ).onSuccess {
-                    ok = true
+    val raw = JSONObject(item.raw.toString())
+        .put("roleName", actualRoleName)
+        .put("tag", actualTag)
+        .put("voice", actualVoice)
+        .put("actualVoice", actualVoice)
+        .put("actualConfigId", config.speechInfo.configId)
+        .put("source", rawOptString(item.raw, "source", "speechRule"))
+
+    return item.copy(
+        tag = actualTag,
+        voice = actualVoice,
+        raw = raw
+    )
+}
+
+private fun rawOptString(raw: JSONObject, key: String, defaultValue: String): String {
+    return raw.optString(key, defaultValue).ifBlank { defaultValue }
+}
+
+
+private data class CacheSynthResult(
+    val sampleRate: Int,
+    val bytes: ByteArray,
+    val request: RequestPayload?,
+)
+
+private fun bindCacheSynthResult(item: QueueItem, request: RequestPayload?): QueueItem {
+    if (request == null) return item
+
+    val speechInfo = request.config.speechInfo
+    val tagData = speechInfo.tagData
+
+    val roleKeys = listOf(
+        "roleName",
+        "characterName",
+        "character",
+        "speakerName",
+        "speaker",
+        "role",
+        "name",
+        "人物",
+        "角色",
+        "角色名",
+        "发言人"
+    )
+
+    val roleFromData = roleKeys.asSequence()
+        .map { tagData[it]?.trim().orEmpty() }
+        .firstOrNull {
+            it.isNotBlank() &&
+                it != "未知发言人" &&
+                !it.equals("duihua", ignoreCase = true) &&
+                !it.equals("narration", ignoreCase = true)
+        }
+        .orEmpty()
+
+    val requestTag = speechInfo.tag.trim()
+    val requestTagName = speechInfo.tagName.trim()
+
+    val roleName = roleFromData
+        .ifBlank { item.raw.optString("roleName", "") }
+        .ifBlank { item.raw.optString("role", "") }
+        .ifBlank { requestTagName }
+        .ifBlank { item.tag }
+        .ifBlank { "旁白" }
+
+    val voice = listOf(
+        tagData["actualVoice"],
+        tagData["voice"],
+        tagData["voiceName"],
+        tagData["ttsName"],
+        tagData["speakerVoice"],
+        tagData["声音"],
+        tagData["音色"],
+        tagData["personality"],
+        request.config.source.voice,
+        item.voice
+    ).asSequence()
+        .map { it?.trim().orEmpty() }
+        .firstOrNull { it.isNotBlank() && it != "tts.default.placeholder" }
+        .orEmpty()
+
+    val actualTag = requestTagName
+        .ifBlank { requestTag }
+        .ifBlank { roleName }
+        .ifBlank { item.tag }
+
+    val raw = JSONObject(item.raw.toString())
+        .put("roleName", roleName)
+        .put("role", roleName)
+        .put("tag", actualTag)
+        .put("voice", voice)
+        .put("actualVoice", voice)
+        .put("actualRequestTag", requestTag)
+        .put("actualRequestTagName", requestTagName)
+        .put(
+            "characterInfo",
+            JSONObject()
+                .put("name", roleName)
+                .put("voice", voice)
+        )
+
+    return item.copy(
+        tag = roleName.ifBlank { actualTag },
+        voice = voice,
+        raw = raw
+    )
+}
+
+private suspend fun synthesizeQueueItemToPcm(
+    manager: MixSynthesizer,
+    item: QueueItem,
+    config: TtsConfiguration,
+): CacheSynthResult? {
+    val out = ByteArrayOutputStream()
+    var synthesizedSampleRate = config.audioFormat.sampleRate.coerceAtLeast(8000)
+    var ok = false
+    var requests: List<RequestPayload> = emptyList()
+
+    appendPreviewLog(
+        context = manager.context.androidContext,
+        source = "缓存队列",
+        message = "完整规则合成路线｜index=${item.index}｜tag=${item.tag}｜voice=${item.voice}｜text=${item.text.take(40)}"
+    )
+
+    CacheRequestPayloadRecorder.begin()
+    try {
+        manager.synthesize(
+            params = SystemParams(text = item.text),
+            forceConfigId = null,
+            callback = object : com.github.jing332.tts.synthesizer.SynthesisCallback {
+                override fun onSynthesizeStart(sampleRate: Int) {
+                    if (sampleRate > 0) synthesizedSampleRate = sampleRate
+                }
+
+                override fun onSynthesizeAvailable(audio: ByteArray) {
+                    if (audio.isEmpty()) return
+                    out.write(audio)
                 }
             }
-            .onFailure {
-                logger.warn { "queue request failed: ${item.index}, ${it}" }
-            }
-
-        return out.toByteArray()
-            .takeIf { ok && it.isNotEmpty() }
-            ?.let { sampleRate to it }
+        ).onSuccess {
+            ok = true
+        }.onFailure { err ->
+            logger.warn("full synth queue request failed: ${item.index} | $err")
+            appendPreviewLog(
+                context = manager.context.androidContext,
+                source = "缓存队列",
+                message = "完整规则合成失败｜index=${item.index}｜$err"
+            )
+        }
+    } finally {
+        requests = CacheRequestPayloadRecorder.end()
     }
+
+    val request = requests.lastOrNull()
+    if (request != null) {
+        appendPreviewLog(
+            context = manager.context.androidContext,
+            source = "缓存队列",
+            message = "完整规则实际请求｜index=${item.index}｜tag=${request.config.speechInfo.tag}｜tagName=${request.config.speechInfo.tagName}｜voice=${request.config.source.voice}｜text=${request.text.take(40)}"
+        )
+    } else {
+        appendPreviewLog(
+            context = manager.context.androidContext,
+            source = "缓存队列",
+            message = "完整规则实际请求为空｜index=${item.index}｜text=${item.text.take(40)}"
+        )
+    }
+
+    val bytes = out.toByteArray()
+    return if (ok && bytes.isNotEmpty()) {
+        CacheSynthResult(
+            sampleRate = synthesizedSampleRate,
+            bytes = bytes,
+            request = request
+        )
+    } else {
+        null
+    }
+}
 
     private suspend fun getBackgroundManager(
         context: Context,
@@ -687,53 +981,235 @@ object AudioCacheFactory {
 ): List<QueueItem> {
     val rule = findActiveSpeechRule()
     val chapterText = chapter.optString("text", "")
-
-    // 关键修复：
-    // 不再优先调用 prepareChapterAudioQueueIfExists。
-    // 回到魔改前的旧规则 handleText 路线，让朗读规则自己处理：
-    // getBookshelf / cunfang.txt / liebiao.json / shuming.<书名>.json / characterRecords.json。
-    if (rule != null) {
-        val legacyQueue = prepareLegacyRuleQueue(
-            context = context,
-            manager = manager,
-            rule = rule,
-            chapterText = chapterText,
-            chapter = chapter
-        )
-
-        appendPreviewLog(
-            context = context,
-            source = "朗读规则运行区",
-            message = "${chapter.optInt("chapterIndex", -1)} ${chapter.optString("chapterTitle", "")}｜旧handleText路线｜生成 ${legacyQueue.size} 句"
-        )
-
-        if (legacyQueue.isNotEmpty()) return legacyQueue
-
-        appendPreviewLog(
-            context = context,
-            source = "朗读规则运行区",
-            message = "${chapter.optInt("chapterIndex", -1)} ${chapter.optString("chapterTitle", "")}｜旧handleText未生成有效队列，停止本章缓存。"
-        )
-        return emptyList()
+    val nextChapters = chapter.optJSONArray("nextChapters") ?: JSONArray()
+    val nextChapterText = joinNextChapterText(nextChapters)
+    val fullAnalyzeText = buildString {
+        append(chapterText)
+        if (nextChapterText.isNotBlank()) {
+            append("\n\n【后续章节】\n")
+            append(nextChapterText)
+        }
     }
 
-    return splitSentences(chapterText).mapIndexed { index, sentence ->
+    if (chapterText.isBlank()) return emptyList()
+
+    val rawQueue = if (rule != null) {
+        runCatching {
+            SpeechRuleEngine(context, rule).apply { eval() }
+                .prepareChapterAudioQueueIfExists(
+                    mapOf(
+                        "bookName" to bookName,
+                        "bookTitle" to bookName,
+                        "name" to bookName,
+                        "bookUrl" to chapter.optString("bookUrl", ""),
+                        "bookKey" to chapter.optString("bookUrl", ""),
+                        "chapterIndex" to chapter.optInt("chapterIndex", -1),
+                        "chapterTitle" to chapter.optString("chapterTitle", ""),
+                        "chapterName" to chapter.optString("chapterTitle", ""),
+                        "chapterText" to chapterText,
+                        "text" to chapterText,
+                            "nextChapters" to nextChapters,
+                            "nextChaptersJson" to nextChapters.toString(),
+                            "nextChapterText" to nextChapterText,
+                            "fullAnalyzeText" to fullAnalyzeText,
+                            "cacheMode" to true
+                    )
+                )
+        }.onFailure {
+            logger.warn(it) { "prepareChapterAudioQueue failed" }
+            appendPreviewLog(
+                context = context,
+                source = "朗读规则运行区",
+                message = "prepareChapterAudioQueue失败｜${chapter.optInt("chapterIndex", -1)} ${chapter.optString("chapterTitle", "")}｜${it.message.orEmpty()}"
+            )
+        }.getOrDefault(emptyList())
+    } else {
+        emptyList()
+    }
+
+      val translateEnabled = CacheAudioQueueTranslateSwitch.isEnabled(
+          context = context,
+          ruleName = rule?.name.orEmpty()
+      )
+
+      val finalRawQueue = if (translateEnabled) {
+          CacheAudioQueueTranslator.translate(
+              context = context,
+              bookName = bookName,
+              rawQueue = rawQueue
+          )
+      } else {
+          rawQueue
+      }
+
+      appendPreviewLog(
+          context = context,
+          source = "朗读规则运行区",
+          message = "缓存队列翻译状态｜${chapter.optInt("chapterIndex", -1)} ${chapter.optString("chapterTitle", "")}｜翻译=${if (translateEnabled) "开启" else "关闭"}｜原始=${rawQueue.size}｜最终=${finalRawQueue.size}"
+      )
+
+    appendPreviewLog(
+        context = context,
+        source = "朗读规则运行区",
+        message = "朗读规则返回audioQueue｜${chapter.optInt("chapterIndex", -1)} ${chapter.optString("chapterTitle", "")}｜${rawQueue.size}句"
+    )
+
+    finalRawQueue.take(5).forEachIndexed { i, raw ->
+        appendPreviewLog(
+            context = context,
+            source = "朗读规则运行区",
+            message = "audioQueue样本#$i｜${raw.toString().take(500)}"
+        )
+    }
+
+    val queue = finalRawQueue.mapIndexedNotNull { fallbackIndex, raw ->
+        val text = raw.firstString("text", "content", "line", "sentence", "value", "台词", "内容")
+        if (text.isBlank()) return@mapIndexedNotNull null
+
+        val index = raw["index"]?.toString()?.toIntOrNull() ?: fallbackIndex
+          fun nestedFirstString(value: Any?, vararg keys: String): String {
+              if (value == null) return ""
+
+              fun fromJsonObject(obj: JSONObject): String {
+                  for (key in keys) {
+                      val v = obj.optString(key, "").trim()
+                      if (v.isNotBlank()) return v
+                  }
+                  return ""
+              }
+
+              return when (value) {
+                  is JSONObject -> fromJsonObject(value)
+                  is Map<*, *> -> {
+                      for (key in keys) {
+                          val v = value[key]?.toString()?.trim().orEmpty()
+                          if (v.isNotBlank()) return v
+                      }
+                      ""
+                  }
+                  else -> runCatching {
+                      val s = value.toString().trim()
+                      if (s.startsWith("{") && s.endsWith("}")) {
+                          fromJsonObject(JSONObject(s))
+                      } else {
+                          ""
+                      }
+                  }.getOrDefault("")
+              }
+          }
+
+          val characterInfo = raw["characterInfo"]
+              ?: raw["roleInfo"]
+              ?: raw["speakerInfo"]
+
+          val characterInfoRoleName = nestedFirstString(
+              characterInfo,
+              "name",
+              "roleName",
+              "role",
+              "characterName",
+              "speakerName",
+              "speaker",
+              "人物",
+              "角色",
+              "说话人"
+          )
+
+          val characterInfoVoice = nestedFirstString(
+              characterInfo,
+              "voice",
+              "voiceName",
+              "voiceId",
+              "speakerVoice",
+              "tts",
+              "ttsName",
+              "音色",
+              "声音"
+          )
+
+          val roleName = raw.firstString(
+              "roleName",
+              "role",
+              "characterName",
+              "character",
+              "speakerName",
+              "speaker",
+              "人物",
+              "角色",
+              "说话人"
+          ).ifBlank { characterInfoRoleName }
+
+          val voice = raw.firstString(
+              "voice",
+              "voiceName",
+              "voiceId",
+              "speakerVoice",
+              "tts",
+              "ttsName",
+              "音色",
+              "声音"
+          ).ifBlank { characterInfoVoice }
+
+          val actualVoice = raw.firstString(
+              "actualVoice",
+              "finalVoice",
+              "resolvedVoice",
+              "实际音色"
+          ).ifBlank { voice }
+
+          val rawTag = raw.firstString("tag", "speechTag", "标签")
+          val tag = roleName
+              .ifBlank { rawTag }
+              .ifBlank { voice }
+
+        val emotion = raw.firstString("emotion", "emo", "style", "mood", "情绪", "感情")
+        val speed = raw.firstFloat(1f, "speed", "rate", "语速")
+        val pitch = raw.firstFloat(1f, "pitch", "tone", "音高")
+        val volume = raw.firstFloat(1f, "volume", "vol", "音量")
+        val source = raw.firstString("source").ifBlank { "speechRule" }
+
+        val normalizedRaw = JSONObject(raw)
+            .put("index", index)
+            .put("text", text)
+            .put("roleName", roleName)
+            .put("tag", tag)
+            .put("voice", voice)
+            .put("actualVoice", actualVoice)
+            .put("characterInfoRoleName", characterInfoRoleName)
+            .put("characterInfoVoice", characterInfoVoice)
+            .put("rawTag", rawTag)
+            .put("emotion", emotion)
+            .put("speed", speed)
+            .put("pitch", pitch)
+            .put("volume", volume)
+            .put("source", source)
+            .put("status", raw.firstString("status", "state").ifBlank { "pending" })
+
         QueueItem(
             index = index,
-            text = sentence,
-            tag = "",
-            voice = "",
-            emotion = "",
-            speed = 1f,
-            pitch = 1f,
-            volume = 1f,
-            raw = JSONObject()
-                .put("index", index)
-                .put("text", sentence)
-                .put("status", "pending")
+            text = text,
+            tag = tag,
+            voice = actualVoice.ifBlank { voice },
+            emotion = emotion,
+            speed = speed,
+            pitch = pitch,
+            volume = volume,
+            raw = normalizedRaw
         )
-    }
+    }.sortedBy { it.index }
+
+    if (queue.isNotEmpty()) return queue
+
+    appendPreviewLog(
+        context = context,
+        source = "朗读规则运行区",
+        message = "朗读规则未生成有效audioQueue｜${chapter.optInt("chapterIndex", -1)} ${chapter.optString("chapterTitle", "")}｜已禁止旧handleText兜底，避免生成错误缓存"
+    )
+
+    return emptyList()
 }
+
+
 
 
 
@@ -969,12 +1445,16 @@ object AudioCacheFactory {
                 .put("text", text)
                 .put("textHash", text.md5())
                 .put("lookupTextHash", text.lookupTextKey().md5())
+                .put("roleName", queueItem?.raw?.optString("roleName", "").orEmpty())
                 .put("tag", queueItem?.tag.orEmpty())
                 .put("voice", queueItem?.voice.orEmpty())
+                .put("actualVoice", queueItem?.raw?.optString("actualVoice", queueItem?.voice.orEmpty()).orEmpty())
+                .put("actualConfigId", queueItem?.raw?.optLong("actualConfigId", 0L) ?: 0L)
                 .put("emotion", queueItem?.emotion.orEmpty())
                 .put("speed", queueItem?.speed ?: 1f)
                 .put("pitch", queueItem?.pitch ?: 1f)
                 .put("volume", queueItem?.volume ?: 1f)
+                .put("source", queueItem?.raw?.optString("source", "speechRule").orEmpty())
                 .put("configFingerprint", configFingerprint)
                 .put("sampleRate", sampleRate.coerceAtLeast(8000))
                 .put("path", audioFile.absolutePath)
@@ -1033,23 +1513,47 @@ object AudioCacheFactory {
         }
     }
 
-    private fun updateQueueItem(dir: File, index: Int, status: String, error: String = "") {
-        val file = File(dir, "queue.json")
-        if (!file.exists()) return
+    private fun updateQueueItem(
+    dir: File,
+    index: Int,
+    status: String,
+    error: String = "",
+    queueItem: QueueItem? = null,
+) {
+    val file = File(dir, "queue.json")
+    if (!file.exists()) return
 
-        val arr = runCatching { JSONArray(file.readText(Charsets.UTF_8)) }.getOrNull() ?: return
-        for (i in 0 until arr.length()) {
-            val item = arr.optJSONObject(i) ?: continue
-            if (item.optInt("index", -1) != index) continue
-            item.put("status", status)
-            item.put("updatedAt", System.currentTimeMillis())
-            if (error.isNotBlank()) item.put("error", error)
-            else item.remove("error")
-            arr.put(i, item)
-            break
+    val arr = runCatching { JSONArray(file.readText(Charsets.UTF_8)) }.getOrNull() ?: return
+    for (i in 0 until arr.length()) {
+        val item = arr.optJSONObject(i) ?: continue
+        if (item.optInt("index", -1) != index) continue
+
+        if (queueItem != null) {
+            item.put("text", queueItem.text)
+            item.put("roleName", queueItem.raw.optString("roleName", ""))
+            item.put("tag", queueItem.tag)
+            item.put("voice", queueItem.voice)
+            item.put("emotion", queueItem.emotion)
+            item.put("speed", queueItem.speed)
+            item.put("pitch", queueItem.pitch)
+            item.put("volume", queueItem.volume)
+            item.put("source", queueItem.raw.optString("source", "speechRule"))
+            item.put("actualVoice", queueItem.raw.optString("actualVoice", queueItem.voice))
+            item.put("actualConfigId", queueItem.raw.optLong("actualConfigId", 0L))
         }
-        file.writeText(arr.toString(2), Charsets.UTF_8)
+
+        item.put("status", status)
+        item.put("updatedAt", System.currentTimeMillis())
+        if (error.isNotBlank()) item.put("error", error)
+        else item.remove("error")
+
+        arr.put(i, item)
+        break
     }
+    file.writeText(arr.toString(2), Charsets.UTF_8)
+}
+
+
 
     private fun upsertItem(items: JSONArray, item: JSONObject) {
         val index = item.optInt("index", -1)
@@ -1158,14 +1662,101 @@ private fun ensureRoleManagerBookContext(
     context: Context,
     bookName: String,
 ) {
-    // 关键修复：
-    // 不在 APK 层写 cunfang.txt / liebiao.json / characterRecords.json。
-    // 这些继续交给旧朗读规则 handleText + 角色管理插件处理，避免 APK 和 JS 两边抢写。
-    appendPreviewLog(
-        context = context,
-        source = "角色管理",
-        message = "跳过APK预切书｜交由朗读规则handleText维护书籍上下文｜book=$bookName"
-    )
+    runCatching {
+        val safeBookName = safeRoleBookName(bookName)
+        val dirs = roleManagerDirs(context)
+
+        dirs.forEach { dir ->
+            if (!dir.exists()) dir.mkdirs()
+
+            val cunfangFile = File(dir, "cunfang.txt")
+            val characterFile = File(dir, "characterRecords.json")
+            val gengxinFile = File(dir, "gengxin.json")
+            val listFile = File(dir, "liebiao.json")
+
+            val oldBookName = runCatching {
+                if (cunfangFile.exists()) {
+                    cunfangFile.readText(Charsets.UTF_8).trim().ifBlank { "默认" }
+                } else {
+                    "默认"
+                }
+            }.getOrDefault("默认")
+
+            val currentRecords = readRoleRecords(characterFile)
+
+            if (oldBookName != safeBookName) {
+                // 保存旧书当前角色，避免切书时丢失
+                if (oldBookName.isNotBlank()) {
+                    File(dir, "shuming.$oldBookName.json")
+                        .writeText(currentRecords.toString(2), Charsets.UTF_8)
+                }
+
+                // 加载目标书角色；目标书不存在时创建空角色表
+                val targetBookFile = File(dir, "shuming.$safeBookName.json")
+                if (!targetBookFile.exists()) {
+                    targetBookFile.writeText("[]", Charsets.UTF_8)
+                }
+
+                val targetRecords = readRoleRecords(targetBookFile)
+                val targetText = targetRecords.toString(2)
+
+                characterFile.writeText(targetText, Charsets.UTF_8)
+                gengxinFile.writeText(targetText, Charsets.UTF_8)
+            } else {
+                // 同一本书，确保 shuming 文件存在
+                val targetBookFile = File(dir, "shuming.$safeBookName.json")
+                if (!targetBookFile.exists()) {
+                    targetBookFile.writeText(currentRecords.toString(2), Charsets.UTF_8)
+                }
+            }
+
+            // 当前书名
+            cunfangFile.writeText(safeBookName, Charsets.UTF_8)
+
+            // 书籍列表：当前书放第一位，避免角色管理插件默认停在“默认”
+            val names = linkedSetOf<String>()
+            names += safeBookName
+
+            runCatching {
+                if (listFile.exists()) {
+                    val arr = JSONArray(listFile.readText(Charsets.UTF_8))
+                    for (i in 0 until arr.length()) {
+                        val n = arr.optString(i, "").trim()
+                        if (n.isNotBlank()) names += n
+                    }
+                }
+            }
+
+            names += "默认"
+
+            val out = JSONArray()
+            names.forEach { out.put(it) }
+            listFile.writeText(out.toString(2), Charsets.UTF_8)
+
+            File(dir, "cache_book_context_meta.json").writeText(
+                JSONObject()
+                    .put("bookName", safeBookName)
+                    .put("oldBookName", oldBookName)
+                    .put("reason", "apk_pre_switch_book")
+                    .put("updatedAt", System.currentTimeMillis())
+                    .toString(2),
+                Charsets.UTF_8
+            )
+        }
+
+        appendPreviewLog(
+            context = context,
+            source = "角色管理预切书",
+            message = "已切换角色管理当前书=$safeBookName｜目录数=${dirs.size}"
+        )
+    }.onFailure {
+        logger.warn(it) { "ensure role manager book context failed" }
+        appendPreviewLog(
+            context = context,
+            source = "角色管理预切书",
+            message = "切书失败：${it.message.orEmpty()}"
+        )
+    }
 }
 
 
@@ -1475,6 +2066,26 @@ private fun writeRoleTextToDirs(
         val manifest = readManifest(dir)
         val queue = readQueue(dir)
         if (manifest == null && queue.isEmpty()) return null
+        fun displayRole(rawRole: String, fallback: String): String {
+            val value = rawRole.ifBlank { fallback }.trim()
+            return when {
+                value.equals("duihua", ignoreCase = true) -> "对话角色（完整规则）"
+                value.equals("narration", ignoreCase = true) -> "旁白"
+                value.isBlank() -> "旁白"
+                else -> value
+            }
+        }
+
+        fun displayVoice(rawVoice: String): String {
+            val value = rawVoice.trim()
+            return when {
+                value.isBlank() -> "完整规则合成"
+                value.equals("tts.default.placeholder", ignoreCase = true) -> "完整规则合成"
+                value.equals("默认音色", ignoreCase = true) -> "完整规则合成"
+                else -> value
+            }
+        }
+
 
         val manifestItems = manifest?.optJSONArray("items")
         val readyItems = mutableListOf<JSONObject>()
@@ -1495,8 +2106,18 @@ private fun writeRoleTextToDirs(
                 PreviewItem(
                     index = item.index,
                     text = item.text,
-                    tag = item.tag,
-                    voice = item.voice,
+                    tag = displayRole(
+                        cached?.optString("roleName", "").orEmpty()
+                            .ifBlank { item.raw.optString("roleName", "") },
+                        cached?.optString("tag", "").orEmpty()
+                            .ifBlank { item.tag }
+                    ),
+                    voice = displayVoice(
+                        cached?.optString("actualVoice", "").orEmpty()
+                            .ifBlank { item.raw.optString("actualVoice", "") }
+                            .ifBlank { cached?.optString("voice", "").orEmpty() }
+                            .ifBlank { item.voice }
+                    ),
                     status = if (cached != null) "ready" else item.raw.optString("status", "pending"),
                     emotion = item.emotion,
                     speed = item.speed,
@@ -1510,8 +2131,14 @@ private fun writeRoleTextToDirs(
                 PreviewItem(
                     index = item.optInt("index", 0),
                     text = item.optString("text", ""),
-                    tag = item.optString("tag", ""),
-                    voice = item.optString("voice", ""),
+                    tag = displayRole(
+                        item.optString("roleName", ""),
+                        item.optString("tag", "")
+                    ),
+                    voice = displayVoice(
+                        item.optString("actualVoice", "")
+                            .ifBlank { item.optString("voice", "") }
+                    ),
                     status = item.optString("status", "ready"),
                     emotion = item.optString("emotion", ""),
                     speed = item.optDouble("speed", 1.0).toFloat(),

@@ -163,6 +163,7 @@ abstract class AbstractMixSynthesizer() : Synthesizer {
 
         logger.debug { "start request: $retries, ${params}, ${config}" }
         event(NormalEvent.Request(request, retries))
+        CacheRequestPayloadRecorder.record(request)
 
         val stream =
             requestInternal(request, playCallback = {
