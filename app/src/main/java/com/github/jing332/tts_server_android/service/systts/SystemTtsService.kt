@@ -108,6 +108,10 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
         @Volatile
         private var currentManager: MixSynthesizer? = null
 
+        // 开源阅读端已负责整章音频合成时，TTS 端不再额外缓存 PCM。
+        // 关闭后：不查 reader_audio_cache，不写 PCM，不额外攒一份 ByteArrayOutputStream。
+        private const val ENABLE_READER_AUDIO_CACHE = false
+
         /**
          * 更新配置
          */
@@ -458,9 +462,10 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
         // 逐句缓存按章节归档：不再启动整章窗口缓存
         // AudioCacheFactory.warmCurrentWindow(applicationContext, mTtsManager)
         val runtimeLogText = htmlEscapeForLog(normalizeLogText(text))
-        logI("朗读执行｜收到句子：$runtimeLogText")
-        logI("朗读执行｜查询缓存库：$runtimeLogText")
+        // 已关闭：避免每句额外刷“收到句子”日志
+        // 已关闭：reader_audio_cache 默认关闭，不再每句查询缓存库
 
+        if (ENABLE_READER_AUDIO_CACHE) {
         AudioCacheFactory.getCachedAudio(applicationContext, text)?.let { cached ->
             logger.debug { "reader audio cache hit: ${cached.chapterKey}#${cached.index}" }
             if (safeStart(cached.sampleRate)) {
@@ -481,6 +486,8 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
             return
         }
 
+        }
+
         // logI("请求音频：$runtimeLogText") // 已关闭：避免和详细普通日志重复
 
         val enabledBgm = request.params.getBoolean(PARAM_BGM_ENABLED, true)
@@ -495,7 +502,7 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
 
             synthesizerJob = mScope.launch {
                 val manager = mTtsManager
-                val synthesizedAudio = java.io.ByteArrayOutputStream()
+                val synthesizedAudio = if (ENABLE_READER_AUDIO_CACHE) java.io.ByteArrayOutputStream() else null
                 var synthesizedSampleRate = 16000
 
                 if (manager == null) {
@@ -503,7 +510,7 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
                     return@launch
                 }
 
-                com.github.jing332.tts.synthesizer.CacheRequestPayloadRecorder.begin()
+                if (ENABLE_READER_AUDIO_CACHE) com.github.jing332.tts.synthesizer.CacheRequestPayloadRecorder.begin()
 
                 val synthResult = manager.synthesize(
                     params = SystemParams(text = request.charSequenceText.toString()),
@@ -516,7 +523,7 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
 
                         override fun onSynthesizeAvailable(audio: ByteArray) {
                             if (audio.isEmpty()) return
-                            synthesizedAudio.write(audio)
+                            synthesizedAudio?.write(audio)
 
                             if (!callbackStarted) {
                                 if (!safeStart(16000)) return
@@ -526,21 +533,27 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
                         }
                     }
                 )
-                val recordedRequests = com.github.jing332.tts.synthesizer.CacheRequestPayloadRecorder.end()
-                val playbackRequest = recordedRequests.lastOrNull {
-                    it.text.trim() == text.trim()
-                } ?: recordedRequests.lastOrNull()
+                val playbackRequest = if (ENABLE_READER_AUDIO_CACHE) {
+                    val recordedRequests = com.github.jing332.tts.synthesizer.CacheRequestPayloadRecorder.end()
+                    recordedRequests.lastOrNull {
+                        it.text.trim() == text.trim()
+                    } ?: recordedRequests.lastOrNull()
+                } else {
+                    null
+                }
 
                 synthResult.onSuccess {
                     logger.debug { "done" }
-                    logI("朗读执行｜准备章节归档：$runtimeLogText")
-                    AudioCacheFactory.savePlaybackAudio(
+                    if (ENABLE_READER_AUDIO_CACHE && synthesizedAudio != null) {
+                        logI("朗读执行｜准备章节归档：$runtimeLogText")
+                        AudioCacheFactory.savePlaybackAudio(
                         context = applicationContext,
                         text = text,
                         sampleRate = synthesizedSampleRate,
                         bytes = synthesizedAudio.toByteArray(),
-                        request = playbackRequest
-                    )
+                            request = playbackRequest
+                        )
+                    }
                     // logI("获取成功：$runtimeLogText") // 已关闭：避免和详细普通日志重复
                     // 实时补请求成功后只写入单句缓存，不重复启动整章分析。
                     safeDone()

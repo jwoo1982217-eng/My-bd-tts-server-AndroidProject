@@ -90,10 +90,10 @@ fun SettingsScreen() {
           var showAudioCacheChapterDialog by remember { mutableStateOf(false) }
           var selectedAudioCacheBookKey by remember { mutableStateOf("") }
           var audioCacheStat by remember {
-              mutableStateOf(AudioCacheFactory.getAudioCacheStat(context))
+              mutableStateOf(AudioCacheFactory.AudioCacheStat(0L, 0, 0L, 0))
           }
           var audioCacheChapters by remember {
-              mutableStateOf(AudioCacheFactory.listAudioChapterCaches(context))
+              mutableStateOf<List<AudioCacheFactory.AudioChapterCacheInfo>>(emptyList())
           }
 
           fun refreshAudioCacheInfo() {
@@ -137,9 +137,9 @@ fun SettingsScreen() {
               }
           }
 
-          LaunchedEffect(Unit) {
-              refreshAudioCacheInfo()
-          }
+          // 不在进入设置页时自动扫描缓存，避免大量文件导致 UI 卡顿。
+          // 点击“音频缓存”时再后台刷新。
+
 
           if (showAudioCacheDialog) {
               AlertDialog(

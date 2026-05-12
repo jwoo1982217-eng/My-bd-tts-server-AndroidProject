@@ -34,7 +34,12 @@ class SysttsFilter : Filter<ILoggingEvent>() {
                     message.contains("handleText强制触发getTagName") ||
                     message.contains("自适应模式") ||
                     message.contains("单模型直判") ||
-                    message.contains("版本确认")
+                    message.contains("版本确认") ||
+                    message.contains("matchDialogFromCache") ||
+                    message.contains("writeDialogCache") ||
+                    message.contains("姓名分析") ||
+                    message.contains("processCharacter") ||
+                    message.contains("后置情绪模块")
 
         val isSpeechRuleLog =
             message.contains("[SpeechRule]", ignoreCase = true) ||
@@ -49,17 +54,16 @@ class SysttsFilter : Filter<ILoggingEvent>() {
                             )
 
         val isPluginLog =
-            message.contains("[Plugin]", ignoreCase = true) ||
-                    loggerName.contains("Plugin", ignoreCase = true) ||
-                    loggerName.contains("TtsPlugin", ignoreCase = true)
+            message.contains("[Plugin]", ignoreCase = true)
 
         return if (isSystemTtsLog || isSpeechRuleLog || isPluginLog) {
             val normalizedMessage = when {
                 message.contains("[SpeechRule]", ignoreCase = true) -> message
-                message.contains("[朗读规则]", ignoreCase = true) -> message.replace("[朗读规则]", "[SpeechRule]")
-                message.contains("[Plugin]", ignoreCase = true) -> message
+                message.contains("[朗读规则]", ignoreCase = true) ->
+                    message.replace("[朗读规则]", "[SpeechRule]")
+
                 isSpeechRuleLog -> "[SpeechRule] $message"
-                isPluginLog -> "[Plugin] $message"
+                isPluginLog -> message
                 else -> message
             }
 
