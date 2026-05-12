@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
@@ -79,16 +81,12 @@ private enum class PreviewTab(val title: String) {
     ReadLog("朗读执行")
 }
 
-private const val RULE_LOG_DISPLAY_LIMIT = 80
-private const val PREVIEW_LOG_KEEP_LIMIT = 300
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ReaderCachePreviewScreen(
     userLogViewModel: UserTtsLogViewModel = viewModel(),
 ) {
     val context = LocalContext.current
-    val clipboardManager = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     val expanded = remember { mutableStateMapOf<String, Boolean>() }
 
@@ -96,8 +94,7 @@ fun ReaderCachePreviewScreen(
     var previewLogs by remember { mutableStateOf<List<AudioCacheFactory.PreviewLog>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
     var clearAllDialog by remember { mutableStateOf(false) }
-    var exportLogDialog by remember { mutableStateOf(false) }
-    var selectedTab by remember { mutableStateOf(PreviewTab.RuleLog) }
+    var selectedTab by remember { mutableStateOf(PreviewTab.Script) }
 
     fun reload() {
         scope.launch {
@@ -111,19 +108,23 @@ fun ReaderCachePreviewScreen(
 
     fun reloadLogs() {
         scope.launch {
-            previewLogs = withContext(Dispatchers.IO) { AudioCacheFactory.listPreviewLogs(context) }.takeLast(PREVIEW_LOG_KEEP_LIMIT)
+            previewLogs = withContext(Dispatchers.IO) {
+                AudioCacheFactory.listPreviewLogs(context)
+            }
         }
     }
 
     LaunchedEffect(Unit) {
-          reloadLogs()
-      }
+        reload()
+        reloadLogs()
+    }
 
     LaunchedEffect(Unit) {
         while (true) {
-              delay(10000)
-              reloadLogs()
-          }
+            delay(1500)
+            reload()
+            reloadLogs()
+        }
     }
 
     if (clearAllDialog) {
@@ -157,53 +158,9 @@ fun ReaderCachePreviewScreen(
 
     val scrollBehaviour = TopAppBarDefaults.pinnedScrollBehavior()
     val visibleLogs = when (selectedTab) {
-        PreviewTab.RuleLog -> previewLogs.filter { it.source == "朗读规则运行区" }.takeLast(RULE_LOG_DISPLAY_LIMIT)
-        PreviewTab.CacheLog -> previewLogs.filter { it.source == "缓存队列" }.takeLast(RULE_LOG_DISPLAY_LIMIT)
+        PreviewTab.RuleLog -> previewLogs.filter { it.source != "缓存队列" }
+        PreviewTab.CacheLog -> previewLogs.filter { it.source == "缓存队列" }
         PreviewTab.Script, PreviewTab.ReadLog -> emptyList()
-    }
-
-
-    if (exportLogDialog) {
-        AlertDialog(
-            onDismissRequest = { exportLogDialog = false },
-            confirmButton = {},
-            dismissButton = {
-                TextButton(onClick = { exportLogDialog = false }) {
-                    Text(stringResource(R.string.cancel))
-                }
-            },
-            title = { Text("导出朗读规则日志") },
-            text = {
-                Column {
-                    val exportOptions = listOf(
-                        "最近 50 条" to 50,
-                        "最近 100 条" to 100,
-                        "最近 300 条" to 300,
-                        "全部 ${visibleLogs.size} 条" to Int.MAX_VALUE
-                    )
-
-                    exportOptions.forEach { option ->
-                        TextButton(
-                            enabled = visibleLogs.isNotEmpty(),
-                            onClick = {
-                                val count = option.second
-                                val logsToExport = if (count == Int.MAX_VALUE) {
-                                    visibleLogs
-                                } else {
-                                    visibleLogs.takeLast(count)
-                                }
-                                val exportText = logsToExport.joinToString(separator = "\n") { it.toString() }
-                                clipboardManager.setText(AnnotatedString(exportText))
-                                context.toast("已复制${logsToExport.size}条朗读规则日志")
-                                exportLogDialog = false
-                            }
-                        ) {
-                            Text(option.first)
-                        }
-                    }
-                }
-            }
-        )
     }
 
     Scaffold(
@@ -211,80 +168,236 @@ fun ReaderCachePreviewScreen(
         modifier = Modifier,
         topBar = {
             NavTopAppBar(
-                title = { Text("后台运行") },
+                title = { Text("朗读缓存中心") },
                 scrollBehavior = scrollBehaviour,
                 actions = {
-                    IconButton(onClick = { reloadLogs() }) {
+                    if (selectedTab != PreviewTab.Script) {
+                        IconButton(
+                            enabled = if (selectedTab == PreviewTab.ReadLog) {
+                                userLogViewModel.logs.isNotEmpty()
+                            } else {
+                                previewLogs.isNotEmpty()
+                            },
+                            onClick = {
+                                if (selectedTab == PreviewTab.ReadLog) {
+                                    userLogViewModel.clear()
+                                    context.toast("朗读执行日志已清空")
+                                } else {
+                                    scope.launch(Dispatchers.IO) {
+                                        AudioCacheFactory.clearPreviewLogs(context)
+                                        withContext(Dispatchers.Main) {
+                                            context.toast("日志已清空")
+                                            reloadLogs()
+                                        }
+                                    }
+                                }
+                            }
+                        ) {
+                            Icon(Icons.Default.DeleteOutline, contentDescription = "清空日志")
+                        }
+                    }
+                    IconButton(onClick = { reload() }) {
                         Icon(Icons.Default.Refresh, contentDescription = "刷新")
+                    }
+                    IconButton(
+                        enabled = books.isNotEmpty(),
+                        onClick = { clearAllDialog = true }
+                    ) {
+                        Icon(Icons.Default.CleaningServices, contentDescription = "清理缓存")
                     }
                 }
             )
         }
     ) { paddingValues ->
-        val bridgeLog = previewLogs.asReversed().firstOrNull {
-            it.source == "当前书桥接" ||
-                it.source.contains("桥接") ||
-                it.toString().contains("角色管理") ||
-                it.toString().contains("current-chapter")
-        }
-
-        val bridgeText = bridgeLog?.toString().orEmpty()
-        val bookName = Regex("书=([^|\\n]+)").find(bridgeText)?.groupValues?.getOrNull(1)?.trim()
-        val chapterName = Regex("章=([^|\\n]+)").find(bridgeText)?.groupValues?.getOrNull(1)?.trim()
-
         Column(
             modifier = Modifier
                 .padding(paddingValues)
                 .fillMaxSize()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Text(
-                text = "角色管理同步状态",
-                style = MaterialTheme.typography.titleLarge
+            PreviewTabs(
+                selectedTab = selectedTab,
+                onSelected = { selectedTab = it }
             )
 
-            Text(
-                text = "状态：" + if (bridgeLog != null) "正常" else "等待同步",
-                style = MaterialTheme.typography.titleMedium
-            )
+            val previewListState = rememberLazyListState()
 
-            Text(
-                text = "当前书名：" + (bookName ?: "未检测到"),
-                style = MaterialTheme.typography.bodyLarge
-            )
 
-            Text(
-                text = "当前章节：" + (chapterName ?: "未检测到"),
-                style = MaterialTheme.typography.bodyLarge
-            )
 
-            Text(
-                text = "同步方式：HTTP 直读",
-                style = MaterialTheme.typography.bodyMedium
-            )
+            LaunchedEffect(
+                  selectedTab,
+                  visibleLogs.size,
+                  visibleLogs.lastOrNull()?.time,
+                  userLogViewModel.logs.size,
+                  userLogViewModel.logs.lastOrNull()?.time
+              ) {
+                  val targetIndex = when (selectedTab) {
+                      PreviewTab.ReadLog -> userLogViewModel.logs.lastIndex
+                      PreviewTab.RuleLog, PreviewTab.CacheLog -> visibleLogs.lastIndex
+                      else -> -1
+                  }
 
-            Text(
-                text = "接口地址：http://127.0.0.1:18326/tts/current-chapter",
-                style = MaterialTheme.typography.bodyMedium
-            )
+                  if (targetIndex >= 0) {
+                      previewListState.animateScrollToItem(targetIndex)
+                  }
+              }
 
-            Text(
-                text = "说明：普通日志、插件日志、朗读规则日志请到底部「日志」页查看。",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
 
-            Text(
-                text = "最近同步记录：",
-                style = MaterialTheme.typography.titleMedium
-            )
 
-            Text(
-                text = bridgeLog?.toString() ?: "暂无角色管理同步记录。请先从开源阅读切书或朗读一次。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            LazyColumn(
+
+
+                state = previewListState,
+
+
+                modifier = Modifier
+
+
+                    .fillMaxWidth()
+
+
+                    .weight(1f),
+
+
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+
+
+                contentPadding = PaddingValues(12.dp)
+
+
+            ) {
+
+            when (selectedTab) {
+                PreviewTab.Script -> {
+                    if (loading) {
+                        item {
+                            Text(
+                                text = stringResource(R.string.loading),
+                                modifier = Modifier.padding(8.dp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    } else if (books.isEmpty()) {
+                        item {
+                            Text(
+                                text = "还没有缓存库。打开 J.阅读朗读后，J.TTS 会按预加载窗口生成章节缓存队列。",
+                                modifier = Modifier.padding(8.dp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    books.forEach { book ->
+                        item(key = "${book.bookKey}_title") {
+                            Column(Modifier.padding(horizontal = 4.dp)) {
+                                Text(
+                                    text = book.bookName,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "${book.chapters.size} 章 · ${book.sizeBytes.sizeToReadable()}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        items(book.chapters, key = { it.chapterKey }) { chapter ->
+                            ChapterCard(
+                                chapter = chapter,
+                                expanded = expanded[chapter.chapterKey] == true,
+                                onToggle = {
+                                    expanded[chapter.chapterKey] =
+                                        expanded[chapter.chapterKey] != true
+                                },
+                                onClear = {
+                                    scope.launch(Dispatchers.IO) {
+                                        AudioCacheFactory.clearChapter(
+                                            context,
+                                            chapter.bookKey,
+                                            chapter.chapterKey
+                                        )
+                                        withContext(Dispatchers.Main) {
+                                            context.toast("已清空本章缓存")
+                                            reload()
+                                        }
+                                    }
+                                },
+                                onRetry = {
+                                    context.toast("开始重试失败句子")
+                                    SystemTtsService.retryReaderAudioCacheFailed(
+                                        context = context,
+                                        bookKey = chapter.bookKey,
+                                        chapterKey = chapter.chapterKey
+                                    ) { ok ->
+                                        scope.launch {
+                                            context.toast(
+                                                if (ok) "重试完成" else "TTS 服务未运行，先朗读一次后再试"
+                                            )
+                                            reload()
+                                        }
+                                    }
+                                },
+                                onRetryItem = { item ->
+                                    context.toast("开始重试第 ${item.index} 句")
+                                    SystemTtsService.retryReaderAudioCacheItem(
+                                        context = context,
+                                        bookKey = chapter.bookKey,
+                                        chapterKey = chapter.chapterKey,
+                                        itemIndex = item.index
+                                    ) { ok ->
+                                        scope.launch {
+                                            context.toast(
+                                                if (ok) "单句重试完成" else "TTS 服务未运行，先朗读一次后再试"
+                                            )
+                                            reload()
+                                        }
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+
+                PreviewTab.ReadLog -> {
+                    if (userLogViewModel.logs.isEmpty()) {
+                        item {
+                            Text(
+                                text = "暂无朗读执行日志。",
+                                modifier = Modifier.padding(8.dp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    } else {
+                        items(
+                            userLogViewModel.logs,
+                        ) { log ->
+                            UserLogRow(log)
+                        }
+                    }
+                }
+
+                PreviewTab.RuleLog, PreviewTab.CacheLog -> {
+                      if (visibleLogs.isEmpty()) {
+                          item {
+                              Text(
+                                  text = "暂无${selectedTab.title}日志。",
+                                  modifier = Modifier.padding(8.dp),
+                                  color = MaterialTheme.colorScheme.onSurfaceVariant
+                              )
+                          }
+                      } else {
+                          itemsIndexed(
+                              items = visibleLogs,
+                              key = { index, log -> "${index}_${log.time}_${log.source}_${log.message.hashCode()}" }
+                          ) { _, log ->
+                              RuleRuntimeLogRow(log)
+                          }
+                      }
+                  }
+            }
+        }
         }
     }
 }

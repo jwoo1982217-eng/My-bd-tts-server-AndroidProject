@@ -40,7 +40,6 @@ import com.github.jing332.tts_server_android.compose.forwarder.systts.SystemTtsF
 import com.github.jing332.tts_server_android.compose.settings.SettingsScreen
 import com.github.jing332.tts_server_android.compose.systts.MigrationTips
 import com.github.jing332.tts_server_android.compose.systts.TtsLogScreen
-import com.github.jing332.tts_server_android.compose.systts.cache.ReaderCachePreviewScreen
 import com.github.jing332.tts_server_android.compose.systts.list.ListManagerScreen
 import com.github.jing332.tts_server_android.conf.AppConfig
 import com.github.jing332.tts_server_android.service.forwarder.ForwarderServiceManager.startSysTtsForwarder
@@ -63,7 +62,7 @@ val LocalOverlayController =
 @Composable
 fun AnimatedContentScope.MainPager(sharedVM: SharedViewModel) {
     val pagerState =
-        rememberPagerState(initialPage = AppConfig.fragmentIndex.value) { PagerDestination.routes.size }
+        rememberPagerState(initialPage = AppConfig.fragmentIndex.value.coerceIn(0, PagerDestination.routes.lastIndex)) { PagerDestination.routes.size }
 
     DisposableEffect(pagerState) {
         onDispose {
@@ -169,7 +168,6 @@ fun AnimatedContentScope.MainPager(sharedVM: SharedViewModel) {
                     when (index) {
                         PagerDestination.SystemTts.index -> ListManagerScreen(sharedVM)
                         PagerDestination.SystemTtsLog.index -> TtsLogScreen()
-                        PagerDestination.ScriptPreview.index -> ReaderCachePreviewScreen()
                         PagerDestination.Settings.index -> SettingsScreen()
                         PagerDestination.SystemTtsForwarder.index -> SystemTtsForwarderScreen()
                     }

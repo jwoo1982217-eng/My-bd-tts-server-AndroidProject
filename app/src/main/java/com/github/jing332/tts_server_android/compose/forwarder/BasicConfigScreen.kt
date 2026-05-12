@@ -17,7 +17,6 @@ import com.github.jing332.compose.widgets.DenseOutlinedField
 import com.github.jing332.compose.widgets.LocalBroadcastReceiver
 import com.github.jing332.compose.widgets.SwitchFloatingButton
 import com.github.jing332.tts_server_android.R
-import com.github.jing332.tts_server_android.compose.systts.LogScreen
 import com.github.jing332.tts_server_android.constant.KeyConst
 
 @Suppress("DEPRECATION")
@@ -58,10 +57,6 @@ internal fun BasicConfigScreen(
     }
 
     Column(modifier) {
-        LogScreen(
-            modifier = Modifier.weight(1f), list = vm.logs, vm.logState
-        )
-
         Row(Modifier.align(Alignment.CenterHorizontally)) {
             DenseOutlinedField(
                 label = { Text(stringResource(R.string.listen_port)) },

@@ -455,8 +455,8 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
         startForegroundService()
         mCurrentText = text
         updateNotification(getString(R.string.systts_state_synthesizing), text)
-        AudioCacheFactory.warmCurrentWindow(applicationContext, mTtsManager)
-
+        // 逐句缓存按章节归档：不再启动整章窗口缓存
+        // AudioCacheFactory.warmCurrentWindow(applicationContext, mTtsManager)
         val runtimeLogText = htmlEscapeForLog(normalizeLogText(text))
         logI("朗读执行｜收到句子：$runtimeLogText")
         logI("朗读执行｜查询缓存库：$runtimeLogText")
@@ -471,7 +471,7 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
                 logI("朗读执行｜缓存命中｜直接返回缓存音频：$runtimeLogText<br>${htmlEscapeForLog(cached.chapterKey)}#${cached.index}｜${htmlEscapeForLog(cached.voice.ifBlank { "本地缓存" })}")
                 writeToCallBack(callback, cached.bytes)
                 safeDone()
-                AudioCacheFactory.warmCurrentWindow(applicationContext, mTtsManager)
+                // // AudioCacheFactory.warmCurrentWindow(applicationContext, mTtsManager) // 已禁用：避免每句朗读重复启动整章分析 // 已禁用：避免每句朗读重复启动整章分析
                 mNotificationJob = mScope.launch {
                     delay(5000)
                     stopForeground(true)
@@ -481,7 +481,7 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
             return
         }
 
-        logI("朗读执行｜缓存未命中｜实时补请求TTS：$runtimeLogText")
+        // logI("请求音频：$runtimeLogText") // 已关闭：避免和详细普通日志重复
 
         val enabledBgm = request.params.getBoolean(PARAM_BGM_ENABLED, true)
         mTtsManager?.context?.cfg?.bgmEnabled = { enabledBgm }
@@ -503,7 +503,9 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
                     return@launch
                 }
 
-                manager.synthesize(
+                com.github.jing332.tts.synthesizer.CacheRequestPayloadRecorder.begin()
+
+                val synthResult = manager.synthesize(
                     params = SystemParams(text = request.charSequenceText.toString()),
                     forceConfigId = cfgId,
                     callback = object : com.github.jing332.tts.synthesizer.SynthesisCallback {
@@ -523,16 +525,24 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
                             writeToCallBack(callback, audio)
                         }
                     }
-                ).onSuccess {
+                )
+                val recordedRequests = com.github.jing332.tts.synthesizer.CacheRequestPayloadRecorder.end()
+                val playbackRequest = recordedRequests.lastOrNull {
+                    it.text.trim() == text.trim()
+                } ?: recordedRequests.lastOrNull()
+
+                synthResult.onSuccess {
                     logger.debug { "done" }
+                    logI("朗读执行｜准备章节归档：$runtimeLogText")
                     AudioCacheFactory.savePlaybackAudio(
                         context = applicationContext,
                         text = text,
                         sampleRate = synthesizedSampleRate,
-                        bytes = synthesizedAudio.toByteArray()
+                        bytes = synthesizedAudio.toByteArray(),
+                        request = playbackRequest
                     )
-                    logI("朗读执行｜获取成功｜写入缓存库：$runtimeLogText")
-                    AudioCacheFactory.warmCurrentWindow(applicationContext, manager)
+                    // logI("获取成功：$runtimeLogText") // 已关闭：避免和详细普通日志重复
+                    // 实时补请求成功后只写入单句缓存，不重复启动整章分析。
                     safeDone()
                 }.onFailure {
                     when (it) {
@@ -1332,22 +1342,112 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
         return userLogVoiceName()
     }
 
+
+    private fun RequestPayload.roleTagForSpeakLog(roleName: String): String {
+        return try {
+            val info = currentTtsLogInfo()
+
+            if (roleName.trim() == "旁白") {
+                return "旁白"
+            }
+
+            val tagOnly = formatTagOnlyForLog(
+                tagName = info.tagName,
+                tag = info.tag
+            )
+
+            tagOnly
+                .removePrefix("【")
+                .removeSuffix("】")
+                .ifBlank { info.tagName }
+                .ifBlank { info.tag }
+                .ifBlank { roleVoiceAssignmentForUserLog(roleName) }
+                .ifBlank { "未知标签" }
+        } catch (_: Throwable) {
+            "未知标签"
+        }
+    }
+
+    private fun boldBlackForLogHtml(value: String): String {
+        return "<font color=\"#000000\"><b>$value</b></font>"
+    }
+
+    private fun formatSpeechTextForLogHtml(cleanText: String): String {
+        val emoEnd = cleanText.indexOf("]]")
+        if (cleanText.startsWith("[[emo:", ignoreCase = true) && emoEnd >= 0) {
+            val prefixEnd = run {
+                val afterEmo = emoEnd + 2
+                if (afterEmo < cleanText.length && cleanText[afterEmo] == '(') {
+                    val descEnd = cleanText.indexOf(")", afterEmo)
+                    if (descEnd >= 0) descEnd + 1 else afterEmo
+                } else {
+                    afterEmo
+                }
+            }
+
+            val prefix = cleanText.substring(0, prefixEnd)
+            val body = cleanText.substring(prefixEnd)
+
+            return if (body.isBlank()) {
+                prefix
+            } else {
+                prefix + boldBlackForLogHtml(body)
+            }
+        }
+
+        return boldBlackForLogHtml(cleanText)
+    }
+
     private fun RequestPayload.userReadableRequestLogHtml(): String {
         val cleanText = htmlEscapeForLog(normalizeLogText(text))
         val roleName = roleNameForUserLog()
-        val assignment = htmlEscapeForLog(roleVoiceAssignmentForUserLog(roleName))
+        val tagLabel = roleTagForSpeakLog(roleName)
 
         return buildString {
-            append("朗读执行｜实时补请求TTS：")
-            append(cleanText)
+            append("请求音频：")
+            append(formatSpeechTextForLogHtml(cleanText))
             append("<br>")
-            append(htmlEscapeForLog(roleName))
-            if (assignment.isNotBlank()) {
+            append("角色：")
+            append(boldBlackForLogHtml(htmlEscapeForLog(roleName)))
+            append("<br>")
+            append("标签：")
+            append(boldBlackForLogHtml(htmlEscapeForLog(tagLabel)))
+        }
+    }
+
+
+
+
+    private fun RequestPayload.userReadableSuccessLogHtml(size: Int, costTime: Long): String {
+        val cleanText = htmlEscapeForLog(normalizeLogText(text))
+        val roleName = roleNameForUserLog()
+        val tagLabel = roleTagForSpeakLog(roleName)
+
+        return buildString {
+            append("获取成功：")
+            append(formatSpeechTextForLogHtml(cleanText))
+            append("<br>")
+            append("角色：")
+            append(boldBlackForLogHtml(htmlEscapeForLog(roleName)))
+            append("<br>")
+            append("标签：")
+            append(boldBlackForLogHtml(htmlEscapeForLog(tagLabel)))
+
+            if (size > 0 || costTime > 0) {
                 append("<br>")
-                append(assignment)
+                append("音频=")
+                append(size)
+                append(" bytes")
+                if (costTime > 0) {
+                    append("｜耗时=")
+                    append(costTime)
+                    append(" ms")
+                }
             }
         }
     }
+
+
 
     private fun normalEvent(e: NormalEvent) {
         when (e) {
@@ -1373,16 +1473,8 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
                 )
             )
 
-            is NormalEvent.ReadAllFromStream -> {
-                if (e.size > 0)
-                    logI(
-                        getString(
-                            R.string.systts_log_success,
-                            e.size.sizeToReadable(),
-                            "${e.costTime}ms"
-                        ) + "<br> ${e.request.text()}"
-                    )
-            }
+            is NormalEvent.ReadAllFromStream ->
+                logI(e.request.userReadableSuccessLogHtml(e.size, e.costTime))
 
             is NormalEvent.HandleStream ->
                 logI(

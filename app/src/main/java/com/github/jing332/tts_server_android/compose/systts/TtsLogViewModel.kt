@@ -22,13 +22,15 @@ class TtsLogViewModel : ViewModel() {
     companion object {
         const val TAG = "TtsLogViewModel"
 
-        const val MAX_SIZE = 150
+        const val MAX_SIZE = 80
 
         // 日志文件超过 2MB 自动裁剪
-        const val MAX_LOG_FILE_SIZE = 2 * 1024 * 1024L
+        const val MAX_LOG_FILE_SIZE = 512 * 1024L
 
         // 裁剪时保留最后 3000 行
-        const val KEEP_LOG_LINES = 3000
+        const val KEEP_LOG_LINES = 800
+
+        const val MAX_LOG_MESSAGE_LENGTH = 1200
 
         private val logger = KotlinLogging.logger(TAG)
 
@@ -185,11 +187,21 @@ class TtsLogViewModel : ViewModel() {
     }
 
     private fun addLogEntry(logEntry: LogEntry) {
-        if (logs.size > MAX_SIZE) {
-            logs.removeRange(0, minOf(10, logs.size))
+        val msg = logEntry.message
+        val safeLogEntry = if (msg.length > MAX_LOG_MESSAGE_LENGTH) {
+            logEntry.copy(
+                message = msg.take(MAX_LOG_MESSAGE_LENGTH) + "\n……日志过长，已自动截断"
+            )
+        } else {
+            logEntry
         }
 
-        logs.add(logEntry)
+        val overflow = logs.size - MAX_SIZE + 1
+        if (overflow > 0) {
+            logs.removeRange(0, minOf(overflow, logs.size))
+        }
+
+        logs.add(safeLogEntry)
     }
 
     private fun isSpecialLog(logEntry: LogEntry): Boolean {

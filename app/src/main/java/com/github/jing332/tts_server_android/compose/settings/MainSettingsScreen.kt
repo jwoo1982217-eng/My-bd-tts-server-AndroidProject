@@ -47,6 +47,16 @@ import com.github.jing332.tts_server_android.conf.AppConfig
 import com.github.jing332.tts_server_android.constant.FilePickerMode
 import com.github.jing332.tts_server_android.utils.MyTools.isIgnoringBatteryOptimizations
 import com.github.jing332.tts_server_android.utils.MyTools.killBattery
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.graphics.Color
+import com.github.jing332.common.utils.toast
+import com.github.jing332.tts_server_android.service.systts.help.AudioCacheFactory
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -73,6 +83,244 @@ fun SettingsScreen() {
         }
     ) { paddingValues ->
         val context = LocalContext.current
+
+          val scope = rememberCoroutineScope()
+          var showAudioCacheDialog by remember { mutableStateOf(false) }
+          var showAudioCacheBookDialog by remember { mutableStateOf(false) }
+          var showAudioCacheChapterDialog by remember { mutableStateOf(false) }
+          var selectedAudioCacheBookKey by remember { mutableStateOf("") }
+          var audioCacheStat by remember {
+              mutableStateOf(AudioCacheFactory.getAudioCacheStat(context))
+          }
+          var audioCacheChapters by remember {
+              mutableStateOf(AudioCacheFactory.listAudioChapterCaches(context))
+          }
+
+          fun refreshAudioCacheInfo() {
+              scope.launch {
+                  audioCacheStat = withContext(Dispatchers.IO) {
+                      AudioCacheFactory.getAudioCacheStat(context)
+                  }
+                  audioCacheChapters = withContext(Dispatchers.IO) {
+                      AudioCacheFactory.listAudioChapterCaches(context)
+                  }
+              }
+          }
+
+          fun clearAudioCache(typeName: String, extensions: Set<String>) {
+              scope.launch {
+                  val count = withContext(Dispatchers.IO) {
+                      AudioCacheFactory.clearAudioCacheByExtensions(context, extensions)
+                  }
+                  refreshAudioCacheInfo()
+                  context.toast("已清理${count}个${typeName}音频缓存")
+              }
+          }
+
+          fun clearBookAudioCache(bookKey: String, typeName: String, extensions: Set<String>) {
+              scope.launch {
+                  val count = withContext(Dispatchers.IO) {
+                      AudioCacheFactory.clearAudioBookCacheByExtensions(context, bookKey, extensions)
+                  }
+                  refreshAudioCacheInfo()
+                  context.toast("已清理${count}个${typeName}音频缓存")
+              }
+          }
+
+          fun clearChapterAudioCache(bookKey: String, chapterKey: String, typeName: String, extensions: Set<String>) {
+              scope.launch {
+                  val count = withContext(Dispatchers.IO) {
+                      AudioCacheFactory.clearAudioChapterCacheByExtensions(context, bookKey, chapterKey, extensions)
+                  }
+                  refreshAudioCacheInfo()
+                  context.toast("已清理${count}个${typeName}音频缓存")
+              }
+          }
+
+          LaunchedEffect(Unit) {
+              refreshAudioCacheInfo()
+          }
+
+          if (showAudioCacheDialog) {
+              AlertDialog(
+                  onDismissRequest = { showAudioCacheDialog = false },
+                  title = { Text("音频缓存清理") },
+                  text = {
+                      Column {
+                          val audioCacheLimit = 80L * 1024L * 1024L
+                          val totalAudioCacheBytes = audioCacheStat.pcmBytes + audioCacheStat.mp3Bytes
+                          val warningColor = if (totalAudioCacheBytes >= audioCacheLimit) Color.Red else Color.Unspecified
+
+                          Text(
+                              text = "总计：${AudioCacheFactory.formatAudioCacheSize(totalAudioCacheBytes)} / 80 MB",
+                              color = warningColor
+                          )
+                          Text(
+                              text = "PCM：${AudioCacheFactory.formatAudioCacheSize(audioCacheStat.pcmBytes)}，${audioCacheStat.pcmCount} 个",
+                              color = warningColor
+                          )
+                          Text(
+                              text = "MP3：${AudioCacheFactory.formatAudioCacheSize(audioCacheStat.mp3Bytes)}，${audioCacheStat.mp3Count} 个",
+                              color = warningColor
+                          )
+
+                          TextButton(onClick = { refreshAudioCacheInfo() }) {
+                              Text("刷新缓存大小")
+                          }
+
+                          TextButton(onClick = { clearAudioCache("PCM", setOf("pcm")) }) {
+                              Text("清理全部 PCM")
+                          }
+
+                          TextButton(onClick = { clearAudioCache("MP3", setOf("mp3")) }) {
+                              Text("清理全部 MP3")
+                          }
+
+                          TextButton(
+                              enabled = audioCacheChapters.isNotEmpty(),
+                              onClick = {
+                                  refreshAudioCacheInfo()
+                                  showAudioCacheBookDialog = true
+                              }
+                          ) {
+                              Text("按书籍清理")
+                          }
+
+                          TextButton(
+                              enabled = audioCacheChapters.isNotEmpty(),
+                              onClick = {
+                                  refreshAudioCacheInfo()
+                                  selectedAudioCacheBookKey = ""
+                                  showAudioCacheChapterDialog = true
+                              }
+                          ) {
+                              Text("按章节清理")
+                          }
+                      }
+                  },
+                  confirmButton = {},
+                  dismissButton = {
+                      TextButton(onClick = { showAudioCacheDialog = false }) {
+                          Text("关闭")
+                      }
+                  }
+              )
+          }
+
+          if (showAudioCacheBookDialog) {
+              AlertDialog(
+                  onDismissRequest = { showAudioCacheBookDialog = false },
+                  title = { Text("按书籍清理音频缓存") },
+                  text = {
+                      Column {
+                          val groups = audioCacheChapters.groupBy { it.bookKey }
+                          groups.forEach { entry ->
+                              val bookKey = entry.key
+                              val list = entry.value
+                              val bookName = list.firstOrNull()?.bookName ?: bookKey
+                              val pcmBytes = list.sumOf { it.pcmBytes }
+                              val pcmCount = list.sumOf { it.pcmCount }
+                              val mp3Bytes = list.sumOf { it.mp3Bytes }
+                              val mp3Count = list.sumOf { it.mp3Count }
+
+                              TextButton(
+                                  enabled = pcmCount > 0,
+                                  onClick = { clearBookAudioCache(bookKey, "本书PCM", setOf("pcm")) }
+                              ) {
+                                  Text("$bookName｜PCM ${AudioCacheFactory.formatAudioCacheSize(pcmBytes)}，${pcmCount}个")
+                              }
+
+                              TextButton(
+                                  enabled = mp3Count > 0,
+                                  onClick = { clearBookAudioCache(bookKey, "本书MP3", setOf("mp3")) }
+                              ) {
+                                  Text("$bookName｜MP3 ${AudioCacheFactory.formatAudioCacheSize(mp3Bytes)}，${mp3Count}个")
+                              }
+                          }
+                      }
+                  },
+                  confirmButton = {},
+                  dismissButton = {
+                      TextButton(onClick = { showAudioCacheBookDialog = false }) {
+                          Text("关闭")
+                      }
+                  }
+              )
+          }
+
+          if (showAudioCacheChapterDialog) {
+              AlertDialog(
+                  onDismissRequest = { showAudioCacheChapterDialog = false },
+                  title = { Text("按章节清理音频缓存") },
+                  text = {
+                      Column {
+                          if (selectedAudioCacheBookKey.isBlank()) {
+                              val groups = audioCacheChapters.groupBy { it.bookKey }
+                              groups.forEach { entry ->
+                                  val bookKey = entry.key
+                                  val bookName = entry.value.firstOrNull()?.bookName ?: bookKey
+                                  TextButton(onClick = { selectedAudioCacheBookKey = bookKey }) {
+                                      Text(bookName)
+                                  }
+                              }
+                          } else {
+                              audioCacheChapters
+                                  .filter { it.bookKey == selectedAudioCacheBookKey }
+                                  .take(80)
+                                  .forEach { chapter ->
+                                      val title = if (chapter.chapterTitle.isBlank()) {
+                                          "第${chapter.chapterIndex}章"
+                                      } else {
+                                          "${chapter.chapterIndex} ${chapter.chapterTitle}"
+                                      }
+
+                                      TextButton(
+                                          enabled = chapter.pcmCount > 0,
+                                          onClick = {
+                                              clearChapterAudioCache(
+                                                  chapter.bookKey,
+                                                  chapter.chapterKey,
+                                                  "本章PCM",
+                                                  setOf("pcm")
+                                              )
+                                          }
+                                      ) {
+                                          Text("$title｜PCM ${AudioCacheFactory.formatAudioCacheSize(chapter.pcmBytes)}，${chapter.pcmCount}个")
+                                      }
+
+                                      TextButton(
+                                          enabled = chapter.mp3Count > 0,
+                                          onClick = {
+                                              clearChapterAudioCache(
+                                                  chapter.bookKey,
+                                                  chapter.chapterKey,
+                                                  "本章MP3",
+                                                  setOf("mp3")
+                                              )
+                                          }
+                                      ) {
+                                          Text("$title｜MP3 ${AudioCacheFactory.formatAudioCacheSize(chapter.mp3Bytes)}，${chapter.mp3Count}个")
+                                      }
+                                  }
+                          }
+                      }
+                  },
+                  confirmButton = {},
+                  dismissButton = {
+                      TextButton(
+                          onClick = {
+                              if (selectedAudioCacheBookKey.isNotBlank()) {
+                                  selectedAudioCacheBookKey = ""
+                              } else {
+                                  showAudioCacheChapterDialog = false
+                              }
+                          }
+                      ) {
+                          Text(if (selectedAudioCacheBookKey.isNotBlank()) "返回书籍" else "关闭")
+                      }
+                  }
+              )
+          }
         Column(
             Modifier
                 .padding(paddingValues)
@@ -232,6 +480,41 @@ fun SettingsScreen() {
                 }
             )
 
+
+              val audioCacheLimitBytes = 80L * 1024L * 1024L
+              val totalAudioCacheBytes = audioCacheStat.pcmBytes + audioCacheStat.mp3Bytes
+              val audioCacheWarningColor =
+                  if (totalAudioCacheBytes >= audioCacheLimitBytes) Color.Red else Color.Unspecified
+
+              BasePreferenceWidget(
+                  icon = { Icon(Icons.Default.FileOpen, contentDescription = null) },
+                  onClick = {
+                      refreshAudioCacheInfo()
+                      showAudioCacheDialog = true
+                  },
+                  title = {
+                      Text(
+                          text = "音频缓存",
+                          color = audioCacheWarningColor
+                      )
+                  },
+                  subTitle = {
+                      Column {
+                          Text(
+                              text = "总计：${AudioCacheFactory.formatAudioCacheSize(totalAudioCacheBytes)} / 80 MB",
+                              color = audioCacheWarningColor
+                          )
+                          Text(
+                              text = "PCM：${AudioCacheFactory.formatAudioCacheSize(audioCacheStat.pcmBytes)}，${audioCacheStat.pcmCount} 个",
+                              color = audioCacheWarningColor
+                          )
+                          Text(
+                              text = "MP3：${AudioCacheFactory.formatAudioCacheSize(audioCacheStat.mp3Bytes)}，${audioCacheStat.mp3Count} 个",
+                              color = audioCacheWarningColor
+                          )
+                      }
+                  }
+              )
             var maxDropdownCount by remember { AppConfig.spinnerMaxDropDownCount }
             SliderPreference(
                 title = { Text(stringResource(id = R.string.spinner_drop_down_max_count)) },

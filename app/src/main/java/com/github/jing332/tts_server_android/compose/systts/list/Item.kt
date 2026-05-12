@@ -225,12 +225,13 @@ internal fun Item(
                         if (limitedTagName.isNotEmpty()) {
                             Text(
                                 text = limitedTagName,
-                                modifier = Modifier.widthIn(max = 122.dp),
+                                modifier = Modifier.widthIn(max = 160.dp),
                                 style = MaterialTheme.typography.labelSmall,
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.primary,
-                                maxLines = 1,
+                                textAlign = TextAlign.Center,
+                                maxLines = 2,
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
@@ -451,27 +452,39 @@ private fun formatTwoLineTag(tag: String): String {
         clean
     }
 }
-private fun compactDisplayTag(tag: String): String {
-    val clean = oneLine(tag)
-        .replace("⚠️", "")
+private fun compactDisplayTag(tagName: String): String {
+    val clean = tagName
+        .replace(Regex("<[^>]+>"), "")
+        .replace(Regex("&lt;[^&]+&gt;"), "")
+        .replace("\\n", " ")
+        .replace("\\r", " ")
+        .replace(Regex("\\s+"), " ")
         .trim()
 
     if (clean.isBlank()) return ""
 
-    val bracket = Regex("""【[^】]+】""").find(clean)?.value
-    if (!bracket.isNullOrBlank()) return bracket
+    val bracket = Regex("【[^】]+】").find(clean)?.value.orEmpty()
 
-    val tagLike = Regex(
-        """(?:男|女|旁白|在线音效|本地音效)/(?:男童|女童|少年|少女|男青年|女青年|男中年|女中年|男老年|女老年|[^\s】]+)\d{1,3}|(?:男童|女童|少年|少女|男青年|女青年|男中年|女中年|男老年|女老年|旁白)\d{1,3}"""
-    ).find(clean)?.value
-
-    if (!tagLike.isNullOrBlank()) {
-        return if (tagLike.startsWith("【")) tagLike else "【$tagLike】"
+    if (bracket.isBlank()) {
+        return if (clean.length > 48) clean.take(48) + "…" else clean
     }
 
-    val first = clean.split(Regex("""\s+""")).firstOrNull().orEmpty()
-    return if (first.startsWith("【")) first else "【$first】"
+    val suffix = clean.substringAfter(bracket, "").trim()
+
+    if (suffix.isBlank()) {
+        return bracket
+    }
+
+    val suffixText = if (suffix.length > 48) {
+        suffix.take(48) + "…"
+    } else {
+        suffix
+    }
+
+    return bracket + "\n" + suffixText
 }
+
+
 
 
 private fun formatTwoLinePluginName(type: String): String {

@@ -1,6 +1,7 @@
 package com.github.jing332.tts_server_android.service.systts.help
 
 import android.content.Context
+import android.util.Log
 import com.github.jing332.common.utils.StringUtils
 import com.github.jing332.database.constants.ReplaceExecution
 import com.github.jing332.database.dbm
@@ -41,7 +42,7 @@ class TextProcessor : ITextProcessor {
     private val random by lazy { Random(System.currentTimeMillis()) }
 
     private fun appendSpeechRuleLog(context: Context, message: String) {
-        AudioCacheFactory.appendPreviewLog(context, "朗读规则", message)
+        Log.i("朗读规则", message)
     }
 
     private fun normalizeSpeechRuleLookupId(ruleId: String): String {
