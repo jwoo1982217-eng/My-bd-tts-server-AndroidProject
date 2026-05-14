@@ -32,3 +32,23 @@ subprojects { project ->
         }
     }
 }
+
+// Termux/Android 构建 Room KSP 修复：
+// Room compiler 的 sqlite-jdbc 默认 native 库会在 Termux 下找 libm.so.6 失败。
+// 强制使用较新的 sqlite-jdbc，避免 DatabaseVerifier 加载旧 native 库崩溃。
+allprojects {
+    configurations.configureEach {
+        resolutionStrategy.force "org.xerial:sqlite-jdbc:3.40.1.0"
+    }
+}
+
+
+/* Termux build fix:
+ * Room compiler uses sqlite-jdbc for compile-time verification.
+ * Old sqlite-jdbc 3.40.1.0 loads Linux/aarch64 glibc native lib and fails on Android/Termux.
+ */
+allprojects {
+    configurations.configureEach {
+        resolutionStrategy.force 'org.xerial:sqlite-jdbc:3.53.1.0'
+    }
+}

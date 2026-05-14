@@ -147,12 +147,12 @@ fun SettingsScreen() {
                   title = { Text("音频缓存清理") },
                   text = {
                       Column {
-                          val audioCacheLimit = 80L * 1024L * 1024L
+                          val audioCacheLimit = 256L * 1024L * 1024L
                           val totalAudioCacheBytes = audioCacheStat.pcmBytes + audioCacheStat.mp3Bytes
                           val warningColor = if (totalAudioCacheBytes >= audioCacheLimit) Color.Red else Color.Unspecified
 
                           Text(
-                              text = "总计：${AudioCacheFactory.formatAudioCacheSize(totalAudioCacheBytes)} / 80 MB",
+                              text = "总计：${AudioCacheFactory.formatAudioCacheSize(totalAudioCacheBytes)} / 256 MB",
                               color = warningColor
                           )
                           Text(
@@ -481,7 +481,7 @@ fun SettingsScreen() {
             )
 
 
-              val audioCacheLimitBytes = 80L * 1024L * 1024L
+              val audioCacheLimitBytes = 256L * 1024L * 1024L
               val totalAudioCacheBytes = audioCacheStat.pcmBytes + audioCacheStat.mp3Bytes
               val audioCacheWarningColor =
                   if (totalAudioCacheBytes >= audioCacheLimitBytes) Color.Red else Color.Unspecified
@@ -501,7 +501,7 @@ fun SettingsScreen() {
                   subTitle = {
                       Column {
                           Text(
-                              text = "总计：${AudioCacheFactory.formatAudioCacheSize(totalAudioCacheBytes)} / 80 MB",
+                              text = "总计：${AudioCacheFactory.formatAudioCacheSize(totalAudioCacheBytes)} / 256 MB",
                               color = audioCacheWarningColor
                           )
                           Text(

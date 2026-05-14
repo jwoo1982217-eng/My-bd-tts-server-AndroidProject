@@ -230,31 +230,20 @@ private fun isPluginLog(message: String): Boolean {
     return message.contains("[Plugin]", ignoreCase = true)
 }
 
-private fun isReaderCallLog(message: String): Boolean {
-    return message.contains("请求音频", ignoreCase = true) ||
-            message.contains("获取成功", ignoreCase = true)
-}
-
 private fun isSpeechRuleLog(message: String): Boolean {
     return message.contains("[SpeechRule]", ignoreCase = true) ||
             message.contains("[朗读规则]", ignoreCase = true)
 }
 
 private fun simplifyVoiceLogMessageForDisplay(message: String): String {
-    var output = message
-        .replace("朗读执行｜请求音频：", "请求音频：")
-        .replace("朗读执行｜获取成功：", "获取成功：")
-        .replace("朗读执行|请求音频：", "请求音频：")
-        .replace("朗读执行|获取成功：", "获取成功：")
-
-    if (!output.contains("获取成功")) return output
+    if (!message.contains("获取成功")) return message
 
     val voiceIdRegex = Regex(
         pattern = """,\s*(?:zh|en|ja|ko|yue|cmn)_[^,<>\s]*?(?:bigtts|mars_bigtts)[^,<>\s]*\s*,""",
         option = RegexOption.IGNORE_CASE
     )
 
-    return output.replace(voiceIdRegex, ", ")
+    return message.replace(voiceIdRegex, ", ")
 }
 private fun DisplayLogEntry.matchesKeyword(keyword: String): Boolean {
     val key = keyword.trim()
@@ -552,7 +541,7 @@ fun LogScreen(
 
     LaunchedEffect(Unit) {
         while (true) {
-            delay(3000)
+            delay(500)
             refreshTick++
         }
     }
@@ -614,18 +603,12 @@ fun LogScreen(
 
             val plugin = isPluginLog(msg)
             val speechRule = isSpeechRuleLog(msg)
-            val normal = !plugin && !speechRule &&
-                    (
-                        msg.contains("请求音频", ignoreCase = true) ||
-                                msg.contains("获取成功", ignoreCase = true)
-                    )
+            val normal = !plugin && !speechRule
 
-            val debugFilterEnabled = filterPluginLog || filterSpeechRuleLog
-            val debugMatched = if (debugFilterEnabled) {
-                (filterPluginLog && plugin) || (filterSpeechRuleLog && speechRule)
-            } else {
-                normal
-            }
+            val debugMatched =
+                normal ||
+                        (filterPluginLog && plugin) ||
+                        (filterSpeechRuleLog && speechRule)
 
             levelMatched && debugMatched
         }

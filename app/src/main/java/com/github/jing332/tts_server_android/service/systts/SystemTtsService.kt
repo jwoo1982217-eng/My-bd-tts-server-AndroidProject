@@ -110,7 +110,10 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
 
         // 开源阅读端已负责整章音频合成时，TTS 端不再额外缓存 PCM。
         // 关闭后：不查 reader_audio_cache，不写 PCM，不额外攒一份 ByteArrayOutputStream。
-        private const val ENABLE_READER_AUDIO_CACHE = false
+        private const val ENABLE_READER_AUDIO_CACHE = true
+        // 先关闭播放前同步查缓存，避免章节桥接/缓存读取阻塞导致开源阅读等待音频
+        private const val ENABLE_READER_AUDIO_CACHE_LOOKUP = true
+        private const val ENABLE_READER_AUDIO_CACHE_PREWARM = true
 
         /**
          * 更新配置
@@ -462,21 +465,41 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
         // 逐句缓存按章节归档：不再启动整章窗口缓存
         // AudioCacheFactory.warmCurrentWindow(applicationContext, mTtsManager)
         val runtimeLogText = htmlEscapeForLog(normalizeLogText(text))
+        if (ENABLE_READER_AUDIO_CACHE_PREWARM) {
+            AudioCacheFactory.warmCurrentWindow(applicationContext, mTtsManager)
+        }
         // 已关闭：避免每句额外刷“收到句子”日志
         // 已关闭：reader_audio_cache 默认关闭，不再每句查询缓存库
 
-        if (ENABLE_READER_AUDIO_CACHE) {
-        AudioCacheFactory.getCachedAudio(applicationContext, text)?.let { cached ->
+        var cachedAudioForPlayback: AudioCacheFactory.CachedAudio? = null
+        if (ENABLE_READER_AUDIO_CACHE_LOOKUP) {
+            cachedAudioForPlayback = try {
+                kotlinx.coroutines.runBlocking {
+                    kotlinx.coroutines.withTimeoutOrNull(250L) {
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            AudioCacheFactory.getCachedAudio(applicationContext, text)
+                        }
+                    }
+                }
+            } catch (e: Throwable) {
+                logger.warn(e) { "reader audio cache lookup failed" }
+                null
+            }
+        }
+
+        cachedAudioForPlayback?.let { cached ->
             logger.debug { "reader audio cache hit: ${cached.chapterKey}#${cached.index}" }
             if (safeStart(cached.sampleRate)) {
                 UserTtsLogger.logCacheSpeak(
                     text = text,
                     voiceName = cached.voice.ifBlank { "本地缓存" }
                 )
-                logI("朗读执行｜缓存命中｜直接返回缓存音频：$runtimeLogText<br>${htmlEscapeForLog(cached.chapterKey)}#${cached.index}｜${htmlEscapeForLog(cached.voice.ifBlank { "本地缓存" })}")
+                logI("获取成功： $runtimeLogText<br>角色： 本地缓存<br>标签： ${htmlEscapeForLog(cached.voice.ifBlank { "本地缓存" })}<br>音频=${cached.bytes.size} bytes")
                 writeToCallBack(callback, cached.bytes)
                 safeDone()
-                // // AudioCacheFactory.warmCurrentWindow(applicationContext, mTtsManager) // 已禁用：避免每句朗读重复启动整章分析 // 已禁用：避免每句朗读重复启动整章分析
+                if (ENABLE_READER_AUDIO_CACHE_PREWARM) {
+                    AudioCacheFactory.warmCurrentWindow(applicationContext, mTtsManager)
+                }
                 mNotificationJob = mScope.launch {
                     delay(5000)
                     stopForeground(true)
@@ -485,10 +508,6 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
             }
             return
         }
-
-        }
-
-        // logI("请求音频：$runtimeLogText") // 已关闭：避免和详细普通日志重复
 
         val enabledBgm = request.params.getBoolean(PARAM_BGM_ENABLED, true)
         mTtsManager?.context?.cfg?.bgmEnabled = { enabledBgm }
@@ -545,7 +564,6 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
                 synthResult.onSuccess {
                     logger.debug { "done" }
                     if (ENABLE_READER_AUDIO_CACHE && synthesizedAudio != null) {
-                        logI("朗读执行｜准备章节归档：$runtimeLogText")
                         AudioCacheFactory.savePlaybackAudio(
                         context = applicationContext,
                         text = text,

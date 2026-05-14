@@ -43,7 +43,13 @@ object AudioCacheFactory {
 
     // 开源阅读播放时会一句一句调用系统TTS。
     // 后台整章缓存只能低频触发，避免每一句都重复启动朗读规则整章分析。
-    private const val WARM_REQUEST_INTERVAL_MS = 2 * 60 * 1000L
+    private const val WARM_REQUEST_INTERVAL_MS = 15 * 1000L
+
+    // 播放缓存清理策略：保留当前句前面多少句，避免回退/重播又重新合成
+    private const val PLAYBACK_CACHE_KEEP_BEHIND = 8
+
+    // 当前书音频缓存上限。想更省空间可改成 80L * 1024L * 1024L
+    private const val PLAYBACK_CACHE_BOOK_LIMIT_BYTES: Long = 256L * 1024L * 1024L
 
     @Volatile
     private var lastWarmRequestAt: Long = 0L
@@ -165,11 +171,16 @@ object AudioCacheFactory {
             val file = File(item.optString("path", ""))
             if (!file.exists() || file.length() <= 0) continue
 
-            return CachedAudio(
+            val cachedIndex = item.optInt("index", -1)
+
+                trimPlayedAudioBefore(context, bookKey, chapterKey, cachedIndex)
+                trimCurrentBookAudioCache(context, bookKey, chapterKey)
+
+                return CachedAudio(
                 sampleRate = item.optInt("sampleRate", 16000).coerceAtLeast(8000),
                 bytes = file.readBytes(),
                 chapterKey = chapterKey,
-                index = item.optInt("index", -1),
+                index = cachedIndex,
                 voice = item.optString("actualVoice", "")
                     .ifBlank { item.optString("voice", "") }
                     .ifBlank { item.optString("tag", "") },
@@ -178,6 +189,104 @@ object AudioCacheFactory {
 
         return null
     }
+
+
+    private fun isAudioCacheFile(file: File): Boolean {
+        val name = file.name.lowercase(Locale.ROOT)
+        return name.endsWith(".pcm") || name.endsWith(".mp3") || name.endsWith(".wav")
+    }
+
+    private fun trimPlayedAudioBefore(
+        context: Context,
+        bookKey: String,
+        chapterKey: String,
+        currentIndex: Int,
+    ) {
+        if (currentIndex < 0) return
+
+        val deleteBefore = currentIndex - PLAYBACK_CACHE_KEEP_BEHIND
+        if (deleteBefore <= 0) return
+
+        val dir = chapterDir(context, bookKey, chapterKey)
+        val manifest = readManifest(dir) ?: return
+        val items = manifest.optJSONArray("items") ?: return
+
+        var deletedCount = 0
+        var deletedBytes = 0L
+
+        for (i in 0 until items.length()) {
+            val item = items.optJSONObject(i) ?: continue
+            val index = item.optInt("index", -1)
+
+            if (index >= 0 && index < deleteBefore) {
+                val path = item.optString("path", "")
+                if (path.isBlank()) continue
+
+                val file = File(path)
+                if (file.exists() && file.isFile && isAudioCacheFile(file)) {
+                    val len = file.length()
+                    if (file.delete()) {
+                        deletedCount++
+                        deletedBytes += len
+                    }
+                }
+            }
+        }
+
+        if (deletedCount > 0) {
+            appendPreviewLog(
+                context = context,
+                source = "播放缓存清理",
+                message = "已清理前文缓存｜章=$chapterKey｜当前句=$currentIndex｜删除=$deletedCount 个｜释放=${formatAudioCacheSize(deletedBytes)}"
+            )
+        }
+    }
+
+    private fun trimCurrentBookAudioCache(
+        context: Context,
+        bookKey: String,
+        chapterKey: String,
+        maxBytes: Long = PLAYBACK_CACHE_BOOK_LIMIT_BYTES,
+    ) {
+        val bookDir = chapterDir(context, bookKey, chapterKey).parentFile ?: return
+        if (!bookDir.exists()) return
+
+        val files = bookDir.walkTopDown()
+            .filter { it.isFile && isAudioCacheFile(it) }
+            .toList()
+
+        var totalBytes = 0L
+        for (file in files) {
+            totalBytes += file.length()
+        }
+
+        if (totalBytes <= maxBytes) return
+
+        val sortedFiles = files.sortedBy { it.lastModified() }
+
+        var deletedCount = 0
+        var deletedBytes = 0L
+
+        for (file in sortedFiles) {
+            if (totalBytes <= maxBytes) break
+
+            val len = file.length()
+            if (file.delete()) {
+                totalBytes -= len
+                deletedBytes += len
+                deletedCount++
+            }
+        }
+
+        if (deletedCount > 0) {
+            appendPreviewLog(
+                context = context,
+                source = "播放缓存清理",
+                message = "当前书缓存超限｜上限=${formatAudioCacheSize(maxBytes)}｜删除=$deletedCount 个｜释放=${formatAudioCacheSize(deletedBytes)}"
+            )
+        }
+    }
+
 
     fun savePlaybackAudio(
         context: Context,
@@ -237,6 +346,10 @@ object AudioCacheFactory {
                     requestPayload = request,
                     status = "partial"
                 )
+
+                val chapterKeyForTrim = chapterKey(bookKey, chapterIndex)
+                trimPlayedAudioBefore(context, bookKey, chapterKeyForTrim, index)
+                trimCurrentBookAudioCache(context, bookKey, chapterKeyForTrim)
 
                 appendPreviewLog(
                     context = context,
