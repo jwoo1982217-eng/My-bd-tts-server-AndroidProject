@@ -43,6 +43,8 @@ public class JttsChapterExportService extends Service {
     public static final String EXTRA_CALLER_PACKAGE = "callerPackage";
     public static final String EXTRA_RESULT_RECEIVER = "resultReceiver";
     public static final String EXTRA_PREFERRED_FORMAT = "preferredFormat";
+    public static final String EXTRA_CHAPTER_CONTEXT_URI = "chapterContextUri";
+    public static final String EXTRA_METHOD = "method";
 
     private static final int NOTIFICATION_ID = 94011;
     private static final String CHANNEL_ID = "jtts_export_bridge";
@@ -63,6 +65,13 @@ public class JttsChapterExportService extends Service {
         }
 
         Bundle req = intent.getExtras() == null ? new Bundle() : new Bundle(intent.getExtras());
+        try {
+            if (intent.getData() != null && !req.containsKey(EXTRA_CHAPTER_CONTEXT_URI)) {
+                req.putString(EXTRA_CHAPTER_CONTEXT_URI, intent.getData().toString());
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "copy intent data to chapterContextUri failed: " + t);
+        }
         executor.execute(new Runnable() {
             @Override
             public void run() {
@@ -99,13 +108,10 @@ public class JttsChapterExportService extends Service {
 
         sendResult(req, "running", 0, null, null);
 
-        File chapterFile = findJttsDataFile("jread_current_chapter.json");
-        if (chapterFile == null || !chapterFile.exists()) {
-            throw new RuntimeException("未找到 jread_current_chapter.json。请先让 J阅读发送整章 marker，并确认 J.TTS 规则已写入缓存。");
-        }
-
-        File jttsDataDir = chapterFile.getParentFile();
-        JSONObject chapter = new JSONObject(readText(chapterFile));
+        ChapterLoadResult loadedChapter = loadChapterFromRequestOrCache(req);
+        File jttsDataDir = loadedChapter.dataDir;
+        JSONObject chapter = loadedChapter.chapter;
+        Log.i(TAG, "章节上下文来源=" + loadedChapter.source);
         String sessionId = chapter.optString("sessionId", "");
         String contentHash = chapter.optString("contentHash", "");
         String bookName = chapter.optString("bookName", chapter.optString("book", ""));
@@ -193,6 +199,7 @@ public class JttsChapterExportService extends Service {
             }
 
             JSONObject manifest = new JSONObject();
+            manifest.put("method", "exportAudiobookChapter");
             manifest.put("requestId", requestId);
             manifest.put("sessionId", sessionId);
             manifest.put("bookName", bookName);
@@ -203,6 +210,7 @@ public class JttsChapterExportService extends Service {
             manifest.put("audioUri", audioUri.toString());
             manifest.put("timelineUri", timelineUri.toString());
             manifest.put("manifestUri", manifestUri.toString());
+            manifest.put("format", "wav");
             manifest.put("audioMimeType", "audio/wav");
             manifest.put("durationMs", audioCursorMs);
             manifest.put("segmentCount", segments.size());
@@ -218,6 +226,145 @@ public class JttsChapterExportService extends Service {
             try { tts.shutdown(); } catch (Throwable ignored) {}
         }
     }
+
+
+    private static class ChapterLoadResult {
+        JSONObject chapter;
+        File dataDir;
+        String source;
+    }
+
+    private ChapterLoadResult loadChapterFromRequestOrCache(Bundle req) throws Exception {
+        String chapterContextUri = "";
+        try {
+            chapterContextUri = req.getString(EXTRA_CHAPTER_CONTEXT_URI, "");
+        } catch (Throwable ignored) {}
+
+        if (chapterContextUri == null || chapterContextUri.trim().length() == 0) {
+            try {
+                chapterContextUri = req.getString("chapter_context_uri", "");
+            } catch (Throwable ignored) {}
+        }
+
+        if (chapterContextUri != null && chapterContextUri.trim().length() > 0) {
+            Uri uri = Uri.parse(chapterContextUri.trim());
+            String raw = readTextFromUri(uri);
+            JSONObject chapter = new JSONObject(raw);
+
+            File dataDir = findJttsDataDirForBridge();
+            writeChapterCacheFiles(dataDir, chapter);
+
+            ChapterLoadResult result = new ChapterLoadResult();
+            result.chapter = chapter;
+            result.dataDir = dataDir;
+            result.source = "chapterContextUri";
+            return result;
+        }
+
+        File chapterFile = findJttsDataFile("jread_current_chapter.json");
+        if (chapterFile == null || !chapterFile.exists()) {
+            throw new RuntimeException("未找到 jread_current_chapter.json，也没有收到 chapterContextUri。J阅读需要在 EXPORT_CHAPTER_AUDIO 中传入 chapterContextUri。");
+        }
+
+        ChapterLoadResult result = new ChapterLoadResult();
+        result.chapter = new JSONObject(readText(chapterFile));
+        result.dataDir = chapterFile.getParentFile();
+        result.source = "jread_current_chapter.json";
+        return result;
+    }
+
+    private File findJttsDataDirForBridge() {
+        try {
+            File f = findJttsDataFile("jread_current_chapter.json");
+            if (f != null && f.getParentFile() != null) return f.getParentFile();
+        } catch (Throwable ignored) {}
+
+        String[] knownFiles = new String[]{
+                "characterRecords.json",
+                "fayinren.json",
+                "miyue.txt",
+                "cunfang.txt",
+                "cache_book_context_meta.json"
+        };
+
+        for (int i = 0; i < knownFiles.length; i++) {
+            try {
+                File f = findJttsDataFile(knownFiles[i]);
+                if (f != null && f.getParentFile() != null) return f.getParentFile();
+            } catch (Throwable ignored) {}
+        }
+
+        File dir = getFilesDir();
+        if (!dir.exists()) dir.mkdirs();
+        return dir;
+    }
+
+    private void writeChapterCacheFiles(File dataDir, JSONObject chapter) throws Exception {
+        if (dataDir == null) dataDir = getFilesDir();
+        if (!dataDir.exists()) dataDir.mkdirs();
+
+        if (!chapter.has("type")) chapter.put("type", "chapter_context");
+        if (!chapter.has("updatedAt")) chapter.put("updatedAt", System.currentTimeMillis());
+
+        String sessionId = chapter.optString("sessionId", "");
+        String bookName = chapter.optString("bookName",
+                chapter.optString("book",
+                        chapter.optString("bookTitle",
+                                chapter.optString("title", "")))).trim();
+
+        String chapterTitle = chapter.optString("chapterTitle", "");
+        String contentHash = chapter.optString("contentHash", "");
+        String chapterContent = chapter.optString("chapterContent", "");
+
+        if (chapterContent.trim().length() == 0) {
+            throw new RuntimeException("chapterContextUri 中 chapterContent 为空");
+        }
+
+        writeText(new File(dataDir, "jread_current_chapter.json"), chapter.toString(2));
+
+        if (bookName.length() > 0) {
+            writeText(new File(dataDir, "cunfang.txt"), bookName);
+        }
+
+        JSONObject meta = new JSONObject();
+        meta.put("source", "chapterContextUri");
+        meta.put("sessionId", sessionId);
+        meta.put("bookName", bookName);
+        meta.put("book", bookName);
+        meta.put("bookTitle", bookName);
+        meta.put("title", bookName);
+        meta.put("chapterTitle", chapterTitle);
+        meta.put("chapterIndex", chapter.opt("chapterIndex"));
+        meta.put("contentHash", contentHash);
+        meta.put("updatedAt", System.currentTimeMillis());
+
+        writeText(new File(dataDir, "cache_book_context_meta.json"), meta.toString(2));
+
+        Log.i(TAG, "chapterContextUri 写入缓存成功 book=" + bookName +
+                " chapter=" + chapterTitle +
+                " len=" + chapterContent.length() +
+                " hash=" + contentHash);
+    }
+
+    private String readTextFromUri(Uri uri) throws Exception {
+        java.io.InputStream in = getContentResolver().openInputStream(uri);
+        if (in == null) {
+            throw new RuntimeException("openInputStream 返回 null: " + uri);
+        }
+
+        try {
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                bos.write(buf, 0, n);
+            }
+            return new String(bos.toByteArray(), StandardCharsets.UTF_8);
+        } finally {
+            try { in.close(); } catch (Throwable ignored) {}
+        }
+    }
+
 
     private void writePointerForRule(File jttsDataDir, String sessionId, int chapterIndex, Segment seg) {
         try {
