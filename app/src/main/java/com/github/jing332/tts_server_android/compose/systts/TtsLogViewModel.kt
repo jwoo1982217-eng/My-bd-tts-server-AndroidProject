@@ -17,12 +17,13 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileWriter
+import com.github.jing332.tts_server_android.SysttsLogRealtimeBus
 
 class TtsLogViewModel : ViewModel() {
     companion object {
         const val TAG = "TtsLogViewModel"
 
-        const val MAX_SIZE = 80
+        const val MAX_SIZE = 60
 
         // 日志文件超过 2MB 自动裁剪
         const val MAX_LOG_FILE_SIZE = 512 * 1024L
@@ -202,6 +203,7 @@ class TtsLogViewModel : ViewModel() {
         }
 
         logs.add(safeLogEntry)
+        SysttsLogRealtimeBus.notifyChanged()
     }
 
     private fun isSpecialLog(logEntry: LogEntry): Boolean {

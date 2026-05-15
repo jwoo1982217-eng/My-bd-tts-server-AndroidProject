@@ -3928,7 +3928,13 @@ if (showBatchMoveDialog) {
                         )
                     }
                 }
-            )
+            ,
+                onMoveToTop = {
+                    if (!isBatchEditMode) {
+                        vm.moveTtsToTopInGroup(item)
+                        SystemTtsService.notifyUpdateConfig()
+                    }
+                })
         }
     }
 
@@ -4272,7 +4278,13 @@ if (showBatchMoveDialog) {
                                 item.copy(groupId = AbstractListGroup.DEFAULT_GROUP_ID)
                             )
                         }
-                    )
+                    ,
+                        onMoveToTop = {
+                            if (!isBatchEditMode) {
+                                vm.moveTtsToTopInGroup(item)
+                                SystemTtsService.notifyUpdateConfig()
+                            }
+                        })
                 }
             }
 

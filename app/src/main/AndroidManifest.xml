@@ -259,6 +259,21 @@
             android:authorities="${applicationId}.legado.bridge"
             android:exported="true" />
 
+    
+        <service
+            android:name="com.github.jing332.tts_server_android.bridge.JttsChapterExportService"
+            android:exported="true" >
+            <intent-filter>
+                <action android:name="com.jtts.action.EXPORT_CHAPTER_AUDIO" />
+            </intent-filter>
+        </service>
+
+        <provider
+            android:name="com.github.jing332.tts_server_android.bridge.JttsExportContentProvider"
+            android:authorities="com.github.jing332.tts_server_android.jtts.export.provider"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
     </application>
 
 </manifest>

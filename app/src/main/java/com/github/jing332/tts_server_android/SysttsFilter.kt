@@ -22,6 +22,7 @@ class SysttsFilter : Filter<ILoggingEvent>() {
     override fun decide(event: ILoggingEvent): FilterReply {
         val loggerName = event.loggerName.orEmpty()
         val message = event.message.orEmpty()
+        val levelName = event.level?.toString().orEmpty()
 
         val isSystemTtsLog = loggerName == SystemTtsService.TAG
 
@@ -53,17 +54,72 @@ class SysttsFilter : Filter<ILoggingEvent>() {
                                     isSpeechRuleJsLog
                             )
 
+        val isPluginRuntimeLogger =
+            loggerName.contains("TtsPlugin", ignoreCase = true) ||
+                    loggerName.contains("PluginTts", ignoreCase = true) ||
+                    loggerName.contains("PluginTtsProvider", ignoreCase = true) ||
+                    loggerName.contains("TtsPluginEngine", ignoreCase = true)
+
+        val isPluginMarkedLog =
+            message.contains("[Plugin]", ignoreCase = true) ||
+                    message.contains("[插件]", ignoreCase = true)
+
+        val isPluginImportantMessage =
+            message.contains("getAudio", ignoreCase = true) ||
+                    message.contains("audio", ignoreCase = true) ||
+                    message.contains("合成", ignoreCase = true) ||
+                    message.contains("请求", ignoreCase = true) ||
+                    message.contains("响应", ignoreCase = true) ||
+                    message.contains("失败", ignoreCase = true) ||
+                    message.contains("异常", ignoreCase = true) ||
+                    message.contains("error", ignoreCase = true) ||
+                    message.contains("warn", ignoreCase = true)
+
+        val isWarnOrError =
+            levelName.equals("WARN", ignoreCase = true) ||
+                    levelName.equals("ERROR", ignoreCase = true)
+
+        val isPluginJsConsoleLog =
+            loggerName.contains("JS-Console", ignoreCase = true) &&
+                    !isSpeechRuleJsLog
+
+        val isPluginNoisyListLog =
+            message.startsWith("书籍列表:") ||
+                    message.startsWith("原始书籍列表:") ||
+                    message.startsWith("清理后书籍列表:") ||
+                    message.startsWith("所有角色名称:") ||
+                    message.startsWith("添加角色选项:")
+
         val isPluginLog =
-            message.contains("[Plugin]", ignoreCase = true)
+            !isPluginNoisyListLog &&
+                    (
+                            isPluginMarkedLog ||
+                                    isPluginJsConsoleLog ||
+                                    (
+                                            isPluginRuntimeLogger &&
+                                                    (isWarnOrError || isPluginImportantMessage)
+                                            )
+                            )
 
         return if (isSystemTtsLog || isSpeechRuleLog || isPluginLog) {
             val normalizedMessage = when {
                 message.contains("[SpeechRule]", ignoreCase = true) -> message
+
                 message.contains("[朗读规则]", ignoreCase = true) ->
                     message.replace("[朗读规则]", "[SpeechRule]")
 
-                isSpeechRuleLog -> "[SpeechRule] $message"
-                isPluginLog -> message
+                isSpeechRuleLog ->
+                    "[SpeechRule] $message"
+
+                message.contains("[Plugin]", ignoreCase = true) ->
+                    message
+
+                message.contains("[插件]", ignoreCase = true) ->
+                    message.replace("[插件]", "[Plugin]")
+
+                isPluginLog ->
+                    "[Plugin] $message"
+
                 else -> message
             }
 

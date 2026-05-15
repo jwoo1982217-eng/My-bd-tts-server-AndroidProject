@@ -1,9 +1,11 @@
 package com.github.jing332.database.dao
 
 import androidx.room.*
+import androidx.room.SkipQueryVerification
 import com.github.jing332.database.entities.SpeechRule
 import kotlinx.coroutines.flow.Flow
 
+@SkipQueryVerification
 @Dao
 interface SpeechRuleDao {
     @get:Query("SELECT * FROM speech_rules ORDER BY `order` ASC")
@@ -12,6 +14,7 @@ interface SpeechRuleDao {
     @get:Query("SELECT * FROM speech_rules WHERE isEnabled = '1'")
     val allEnabled: List<SpeechRule>
 
+    @SkipQueryVerification
     @Query("SELECT * FROM speech_rules ORDER BY `order` ASC")
     fun flowAll(): Flow<List<SpeechRule>>
 
@@ -27,12 +30,15 @@ interface SpeechRuleDao {
     @Update
     fun update(vararg data: SpeechRule)
 
+    @SkipQueryVerification
     @Query("SELECT * FROM speech_rules WHERE ruleId = :ruleId AND isEnabled = :isEnabled LIMIT 1")
     fun getByRuleId(ruleId: String, isEnabled: Boolean = true): SpeechRule?
 
+    @SkipQueryVerification
     @Query("SELECT * FROM speech_rules WHERE ruleId = :ruleId LIMIT 1")
     fun getByRuleIdAny(ruleId: String): SpeechRule?
 
+    @SkipQueryVerification
     @Query("UPDATE speech_rules SET ruleId = :newRuleId WHERE ruleId = :oldRuleId")
     fun updateRuleId(oldRuleId: String, newRuleId: String)
 

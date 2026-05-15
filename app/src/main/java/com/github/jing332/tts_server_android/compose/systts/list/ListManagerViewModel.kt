@@ -77,6 +77,24 @@ class ListManagerViewModel : ViewModel() {
             .map { buildNode(it) }
     }
 
+    fun moveTtsToTopInGroup(tts: SystemTtsV2) {
+        viewModelScope.launch {
+            val groupList = dbm.systemTtsV2
+                .getTtsListByGroupId(tts.groupId)
+                .sortedBy { it.order }
+
+            if (groupList.firstOrNull()?.id == tts.id) return@launch
+
+            val reordered = mutableListOf<SystemTtsV2>()
+            reordered.add(tts)
+            reordered.addAll(groupList.filter { it.id != tts.id })
+
+            reordered.forEachIndexed { index, item ->
+                dbm.systemTtsV2.update(item.copy(order = index))
+            }
+        }
+    }
+
     fun updateTtsEnabled(
         item: SystemTtsV2,
         enabled: Boolean,

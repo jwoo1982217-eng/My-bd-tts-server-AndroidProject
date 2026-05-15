@@ -83,6 +83,7 @@ internal fun Item(
     onEdit: () -> Unit,
     onAudition: () -> Unit,
     onExport: () -> Unit,
+    onMoveToTop: () -> Unit = {},
     onAvatarClick: (() -> Unit)? = null,
 ) {
     val view = LocalView.current
@@ -354,6 +355,14 @@ internal fun Item(
                             },
                             leadingIcon = {
                                 Icon(Icons.Default.Output, null)
+                            }
+                        )
+
+                        DropdownMenuItem(
+                            text = { Text("置顶") },
+                            onClick = {
+                                showOptions = false
+                                onMoveToTop()
                             }
                         )
 

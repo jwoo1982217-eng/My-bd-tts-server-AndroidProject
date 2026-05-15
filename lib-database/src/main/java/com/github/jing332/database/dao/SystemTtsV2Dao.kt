@@ -7,6 +7,7 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Update
+import androidx.room.SkipQueryVerification
 import com.github.jing332.database.constants.SpeechTarget
 import com.github.jing332.database.entities.AbstractListGroup.Companion.DEFAULT_GROUP_ID
 import com.github.jing332.database.entities.systts.GroupWithSystemTts
@@ -15,6 +16,7 @@ import com.github.jing332.database.entities.systts.SystemTtsV2
 import com.github.jing332.database.entities.systts.TtsConfigurationDTO
 import kotlinx.coroutines.flow.Flow
 
+@SkipQueryVerification
 @Dao
 interface SystemTtsV2Dao {
     @get:Query("SELECT COUNT(*) FROM system_tts_v2")
@@ -29,18 +31,23 @@ interface SystemTtsV2Dao {
     @get:Query("SELECT * FROM SystemTtsGroup")
     val allGroup: List<SystemTtsGroup>
 
+    @SkipQueryVerification
     @Query("SELECT * FROM SystemTtsGroup WHERE parentGroupId = :parentId ORDER BY `order`")
     fun getGroupsByParent(parentId: Long = 0L): List<SystemTtsGroup>
 
+    @SkipQueryVerification
     @Query("SELECT COUNT(*) FROM SystemTtsGroup WHERE parentGroupId = :parentId")
     fun getGroupCountByParent(parentId: Long = 0L): Int
 
+    @SkipQueryVerification
     @Query("SELECT * FROM SystemTtsGroup WHERE groupId = :id")
     fun getGroupById(id: Long): SystemTtsGroup?
 
+    @SkipQueryVerification
     @Query("SELECT * FROM system_tts_v2 WHERE id = :id")
     fun get(id: Long): SystemTtsV2
 
+    @SkipQueryVerification
     @Query("SELECT * FROM system_tts_v2 WHERE isEnabled = '1' AND  groupId = :groupId")
     fun getEnabledListByGroupId(groupId: Long): List<SystemTtsV2>
 
@@ -55,10 +62,12 @@ interface SystemTtsV2Dao {
 
 
     @Transaction
+    @SkipQueryVerification
     @Query("SELECT * FROM SystemTtsGroup ORDER BY `order`")
     fun getAllGroupWithTts(): List<GroupWithSystemTts>
 
     @Transaction
+    @SkipQueryVerification
     @Query("SELECT * FROM SystemTtsGroup ORDER BY `order`")
     fun flowAllGroupWithTts(): Flow<List<GroupWithSystemTts>>
 
@@ -75,20 +84,25 @@ interface SystemTtsV2Dao {
     fun delete(vararg tts: SystemTtsV2)
 
 
+    @SkipQueryVerification
     @Query("SELECT * FROM system_tts_v2 WHERE groupId = :groupId")
     fun getByGroup(groupId: Long): List<SystemTtsV2>
 
+    @SkipQueryVerification
     @Query("DELETE from system_tts_v2 WHERE groupId = :groupId")
     fun deleteTtsByGroup(groupId: Long)
 
     @Transaction
+    @SkipQueryVerification
     @Query("SELECT * FROM SystemTtsGroup ORDER BY `order`")
     fun allGroup(): List<GroupWithSystemTts>
 
 
+    @SkipQueryVerification
     @Query("SELECT * FROM SystemTtsGroup WHERE groupId = :id")
     fun getGroup(id: Long = DEFAULT_GROUP_ID): SystemTtsGroup?
 
+    @SkipQueryVerification
     @Query("SELECT * FROM system_tts_v2 WHERE groupId = :groupId ORDER BY `order` ASC")
     fun getTtsListByGroupId(groupId: Long): List<SystemTtsV2>
 
