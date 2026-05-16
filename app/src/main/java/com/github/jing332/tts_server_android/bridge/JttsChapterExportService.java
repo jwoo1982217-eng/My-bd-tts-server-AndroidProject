@@ -36,6 +36,10 @@ public class JttsChapterExportService extends Service {
 
     public static final String ACTION_EXPORT = "com.jtts.action.EXPORT_CHAPTER_AUDIO";
     public static final String ACTION_RESULT = "com.jtts.action.EXPORT_CHAPTER_AUDIO_RESULT";
+    public static final String ACTION_IMPORT_CONTEXT = "com.jtts.action.IMPORT_CHAPTER_CONTEXT";
+    public static final String ACTION_IMPORT_CONTEXT_RESULT = "com.jtts.action.IMPORT_CHAPTER_CONTEXT_RESULT";
+    public static final String ACTION_IMPORT_READING_POINTER = "com.jtts.action.IMPORT_READING_POINTER";
+    public static final String ACTION_IMPORT_READING_POINTER_RESULT = "com.jtts.action.IMPORT_READING_POINTER_RESULT";
 
     public static final String EXTRA_REQUEST_ID = "requestId";
     public static final String EXTRA_SESSION_ID = "sessionId";
@@ -57,12 +61,68 @@ public class JttsChapterExportService extends Service {
         startAsForeground("J.TTS 正在准备整章导出");
     }
 
+
+    private static final String BRIDGE_FGS_CHANNEL_ID = "jtts_bridge_tasks";
+    private static final int BRIDGE_FGS_NOTIFICATION_ID = 712093;
+
+    private void startBridgeForeground(String action) {
+        try {
+            String text = "J.TTS Bridge 正在处理请求";
+            if (ACTION_IMPORT_CONTEXT.equals(action)) {
+                text = "正在导入章节上下文";
+            } else if (ACTION_IMPORT_READING_POINTER.equals(action)) {
+                text = "正在同步朗读位置";
+            } else if (ACTION_EXPORT.equals(action)) {
+                text = "正在处理章节音频导出";
+            } else if ("com.jtts.action.EXPORT_READER_AUDIO_CACHE".equals(action)) {
+                text = "正在导出朗读音频缓存";
+            }
+
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                NotificationChannel channel = new NotificationChannel(
+                        BRIDGE_FGS_CHANNEL_ID,
+                        "J.TTS Bridge",
+                        NotificationManager.IMPORTANCE_LOW
+                );
+                channel.setDescription("J.TTS 与 J阅读桥接任务");
+                NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+                if (nm != null) nm.createNotificationChannel(channel);
+            }
+
+            int icon = getApplicationInfo().icon;
+            if (icon == 0) icon = android.R.drawable.stat_notify_sync;
+
+            Notification.Builder builder;
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                builder = new Notification.Builder(this, BRIDGE_FGS_CHANNEL_ID);
+            } else {
+                builder = new Notification.Builder(this);
+            }
+
+            Notification notification = builder
+                    .setSmallIcon(icon)
+                    .setContentTitle("J.TTS Bridge")
+                    .setContentText(text)
+                    .setOngoing(false)
+                    .setShowWhen(false)
+                    .setCategory(Notification.CATEGORY_SERVICE)
+                    .build();
+
+            startForeground(BRIDGE_FGS_NOTIFICATION_ID, notification);
+        } catch (Throwable t) {
+            Log.e(TAG, "startBridgeForeground failed", t);
+        }
+    }
+
+
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent == null || !ACTION_EXPORT.equals(intent.getAction())) {
+        if (intent == null || (!ACTION_EXPORT.equals(intent.getAction()) && !ACTION_IMPORT_CONTEXT.equals(intent.getAction()) && !ACTION_IMPORT_READING_POINTER.equals(intent.getAction()))) {
             stopSelf(startId);
             return START_NOT_STICKY;
         }
+
+        startBridgeForeground(intent.getAction());
 
         Bundle req = intent.getExtras() == null ? new Bundle() : new Bundle(intent.getExtras());
         try {
@@ -72,14 +132,28 @@ public class JttsChapterExportService extends Service {
         } catch (Throwable t) {
             Log.w(TAG, "copy intent data to chapterContextUri failed: " + t);
         }
+
+        final boolean importContextOnly = ACTION_IMPORT_CONTEXT.equals(intent.getAction());
         executor.execute(new Runnable() {
             @Override
             public void run() {
                 try {
-                    exportChapter(req);
+                    if (ACTION_IMPORT_READING_POINTER.equals(intent.getAction())) {
+                        importReadingPointerOnly(req);
+                    } else if (importContextOnly) {
+                        importChapterContextOnly(req);
+                    } else {
+                        exportChapter(req);
+                    }
                 } catch (Throwable t) {
                     Log.e(TAG, "export failed", t);
-                    sendResult(req, "failed", -1, null, String.valueOf(t));
+                    if (ACTION_IMPORT_READING_POINTER.equals(intent.getAction())) {
+                        sendImportPointerResult(req, "failed", -1, null, String.valueOf(t));
+                    } else if (importContextOnly) {
+                        sendImportContextResult(req, "failed", -1, null, String.valueOf(t));
+                    } else {
+                        sendResult(req, "failed", -1, null, String.valueOf(t));
+                    }
                 } finally {
                     stopSelf(startId);
                 }
@@ -99,6 +173,169 @@ public class JttsChapterExportService extends Service {
     public IBinder onBind(Intent intent) {
         return null;
     }
+
+
+
+    private void importReadingPointerOnly(Bundle req) throws Exception {
+        sendImportPointerResult(req, "running", 0, null, null);
+
+        JSONObject ptr;
+        String pointerJson = req.getString("pointerJson", "");
+        if (pointerJson != null && pointerJson.trim().length() > 0) {
+            ptr = new JSONObject(pointerJson);
+        } else {
+            ptr = new JSONObject();
+            ptr.put("type", "current_pointer");
+            ptr.put("sessionId", req.getString("sessionId", ""));
+            ptr.put("contentHash", req.getString("contentHash", ""));
+            ptr.put("currentText", req.getString("currentText", ""));
+
+            if (req.containsKey("startOffset")) {
+                ptr.put("startOffset", req.getInt("startOffset", -1));
+            } else {
+                ptr.put("startOffset", -1);
+            }
+
+            if (req.containsKey("endOffset")) {
+                ptr.put("endOffset", req.getInt("endOffset", -1));
+            } else {
+                ptr.put("endOffset", -1);
+            }
+
+            if (req.containsKey("chapterIndex")) {
+                ptr.put("chapterIndex", req.getInt("chapterIndex", -1));
+            } else {
+                ptr.put("chapterIndex", -1);
+            }
+
+            ptr.put("updatedAt", System.currentTimeMillis());
+        }
+
+        if (!ptr.has("type")) ptr.put("type", "current_pointer");
+        if (!ptr.has("updatedAt")) ptr.put("updatedAt", System.currentTimeMillis());
+
+        File dataDir = findJttsDataDirForBridge();
+        if (dataDir == null) dataDir = getFilesDir();
+        if (!dataDir.exists()) dataDir.mkdirs();
+
+        writeText(new File(dataDir, "jread_current_pointer.json"), ptr.toString(2));
+
+        JSONObject manifest = new JSONObject();
+        manifest.put("method", "importReadingPointer");
+        manifest.put("status", "done");
+        manifest.put("requestId", req.getString(EXTRA_REQUEST_ID, "ptr_" + System.currentTimeMillis()));
+        manifest.put("sessionId", ptr.optString("sessionId", ""));
+        manifest.put("contentHash", ptr.optString("contentHash", ""));
+        manifest.put("chapterIndex", ptr.optInt("chapterIndex", -1));
+        manifest.put("startOffset", ptr.optInt("startOffset", -1));
+        manifest.put("endOffset", ptr.optInt("endOffset", -1));
+        manifest.put("currentTextLength", ptr.optString("currentText", "").length());
+        manifest.put("updatedAt", System.currentTimeMillis());
+
+        Log.i(TAG, "当前位置导入完成 sessionId=" + ptr.optString("sessionId", "") +
+                " start=" + ptr.optInt("startOffset", -1) +
+                " end=" + ptr.optInt("endOffset", -1) +
+                " textLen=" + ptr.optString("currentText", "").length());
+
+        sendImportPointerResult(req, "done", 100, manifest, null);
+    }
+
+    private void sendImportPointerResult(Bundle req, String status, int progress, JSONObject manifest, String error) {
+        try {
+            Bundle b = new Bundle();
+            b.putString("status", status);
+            b.putInt("progress", progress);
+            if (manifest != null) b.putString("manifestJson", manifest.toString());
+            if (error != null) b.putString("error", error);
+
+            ResultReceiver rr = null;
+            try { rr = req.getParcelable(EXTRA_RESULT_RECEIVER); } catch (Throwable ignored) {}
+            if (rr != null) {
+                int code = "done".equals(status) ? 1 : ("failed".equals(status) ? -1 : 0);
+                rr.send(code, b);
+            }
+
+            Intent out = new Intent(ACTION_IMPORT_READING_POINTER_RESULT);
+            out.putExtras(b);
+            out.putExtra(EXTRA_REQUEST_ID, req.getString(EXTRA_REQUEST_ID, ""));
+            out.putExtra("method", "importReadingPointer");
+
+            String callerPackage = req.getString(EXTRA_CALLER_PACKAGE, "");
+            if (callerPackage != null && callerPackage.length() > 0) out.setPackage(callerPackage);
+
+            sendBroadcast(out);
+        } catch (Throwable t) {
+            Log.w(TAG, "sendImportPointerResult failed", t);
+        }
+    }
+
+
+    private void importChapterContextOnly(Bundle req) throws Exception {
+        sendImportContextResult(req, "running", 0, null, null);
+
+        ChapterLoadResult loadedChapter = loadChapterFromRequestOrCache(req);
+        JSONObject chapter = loadedChapter.chapter;
+
+        String requestId = req.getString(EXTRA_REQUEST_ID, "import_" + System.currentTimeMillis());
+        String sessionId = chapter.optString("sessionId", req.getString(EXTRA_SESSION_ID, ""));
+        String bookName = chapter.optString("bookName",
+                chapter.optString("book",
+                        chapter.optString("bookTitle",
+                                chapter.optString("title", ""))));
+        String chapterTitle = chapter.optString("chapterTitle", "");
+        String contentHash = chapter.optString("contentHash", req.getString(EXTRA_CONTENT_HASH, ""));
+        String chapterContent = chapter.optString("chapterContent", "");
+
+        JSONObject manifest = new JSONObject();
+        manifest.put("method", "importChapterContext");
+        manifest.put("status", "done");
+        manifest.put("requestId", requestId);
+        manifest.put("sessionId", sessionId);
+        manifest.put("bookName", bookName);
+        manifest.put("chapterTitle", chapterTitle);
+        manifest.put("chapterIndex", chapter.opt("chapterIndex"));
+        manifest.put("contentHash", contentHash);
+        manifest.put("chapterContentLength", chapterContent.length());
+        manifest.put("source", loadedChapter.source);
+        manifest.put("updatedAt", System.currentTimeMillis());
+
+        Log.i(TAG, "章节上下文导入完成 source=" + loadedChapter.source +
+                " book=" + bookName +
+                " chapter=" + chapterTitle +
+                " len=" + chapterContent.length());
+
+        sendImportContextResult(req, "done", 100, manifest, null);
+    }
+
+    private void sendImportContextResult(Bundle req, String status, int progress, JSONObject manifest, String error) {
+        try {
+            Bundle b = new Bundle();
+            b.putString("status", status);
+            b.putInt("progress", progress);
+            if (manifest != null) b.putString("manifestJson", manifest.toString());
+            if (error != null) b.putString("error", error);
+
+            ResultReceiver rr = null;
+            try { rr = req.getParcelable(EXTRA_RESULT_RECEIVER); } catch (Throwable ignored) {}
+            if (rr != null) {
+                int code = "done".equals(status) ? 1 : ("failed".equals(status) ? -1 : 0);
+                rr.send(code, b);
+            }
+
+            Intent out = new Intent(ACTION_IMPORT_CONTEXT_RESULT);
+            out.putExtras(b);
+            out.putExtra(EXTRA_REQUEST_ID, req.getString(EXTRA_REQUEST_ID, ""));
+            out.putExtra("method", "importChapterContext");
+
+            String callerPackage = req.getString(EXTRA_CALLER_PACKAGE, "");
+            if (callerPackage != null && callerPackage.length() > 0) out.setPackage(callerPackage);
+
+            sendBroadcast(out);
+        } catch (Throwable t) {
+            Log.w(TAG, "sendImportContextResult failed", t);
+        }
+    }
+
 
     private void exportChapter(Bundle req) throws Exception {
         String requestId = safeFilePart(req.getString(EXTRA_REQUEST_ID, "req_" + System.currentTimeMillis()));
@@ -280,11 +517,18 @@ public class JttsChapterExportService extends Service {
         } catch (Throwable ignored) {}
 
         String[] knownFiles = new String[]{
+                "jread_current_chapter.json",
+                "cache_book_context_meta.json",
+                "cunfang.txt",
                 "characterRecords.json",
                 "fayinren.json",
                 "miyue.txt",
-                "cunfang.txt",
-                "cache_book_context_meta.json"
+
+                // 2.94 朗读规则实际会生成/使用这些文件；用于定位当前插件数据目录
+                "dialog_cache.json",
+                "nameKeyIndex.txt",
+                "aliasKeyIndex.txt",
+                "fayinren_emotion_summary.json"
         };
 
         for (int i = 0; i < knownFiles.length; i++) {

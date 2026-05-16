@@ -1,6 +1,7 @@
 package com.github.jing332.tts_server_android.service.systts.help
 
 import android.content.Context
+import android.net.Uri
 import com.github.jing332.common.utils.StringUtils
 import com.github.jing332.database.dbm
 import com.github.jing332.database.entities.SpeechRule
@@ -50,6 +51,12 @@ object AudioCacheFactory {
 
     // 当前书音频缓存上限。想更省空间可改成 80L * 1024L * 1024L
     private const val PLAYBACK_CACHE_BOOK_LIMIT_BYTES: Long = 256L * 1024L * 1024L
+
+    // 最终分工：
+    // J.TTS 播放链路不再读取旧音频缓存，避免误命中导致反复读同一句。
+    // J.TTS 仍然可以合成当前句并写入缓存。
+    // J阅读通过 EXPORT_READER_AUDIO_CACHE 复制缓存片段，自己拼接/加密整章音频。
+    private const val DISABLE_PLAYBACK_CACHE_READ_FOR_STABILITY = true
 
     @Volatile
     private var lastWarmRequestAt: Long = 0L
@@ -143,6 +150,10 @@ object AudioCacheFactory {
         val cleanText = text.trim()
         if (cleanText.isBlank()) return null
 
+        if (DISABLE_PLAYBACK_CACHE_READ_FOR_STABILITY) {
+            return null
+        }
+
         // 逐句缓存按章节归档：只读取当前章元信息，不使用整章窗口
         val current = ReaderChapterBridgeClient.fetchCurrentChapterJson()
         if (!current.optBoolean("ok", false)) return null
@@ -158,6 +169,7 @@ object AudioCacheFactory {
         val textHash = cleanText.md5()
         val lookupTextHash = cleanText.lookupTextKey().md5()
         val configFingerprint = currentConfigFingerprint()
+        val currentPointer = readCurrentPointerForAudioCache(context, cleanText)
 
         for (j in 0 until items.length()) {
             val item = items.optJSONObject(j) ?: continue
@@ -165,7 +177,10 @@ object AudioCacheFactory {
                 item.optString("text", "").lookupTextKey().md5()
             }
 
-            if (item.optString("textHash") != textHash && cachedLookupTextHash != lookupTextHash) continue
+            val pointerMatched = isPointerMatchedForAudioCache(item, currentPointer)
+            val textMatched = item.optString("textHash") == textHash || cachedLookupTextHash == lookupTextHash
+
+            if (!pointerMatched && !textMatched) continue
             if (item.optString("configFingerprint") != configFingerprint) continue
 
             val file = File(item.optString("path", ""))
@@ -188,6 +203,97 @@ object AudioCacheFactory {
         }
 
         return null
+    }
+
+
+
+    private fun readCurrentPointerForAudioCache(context: Context, currentText: String? = null): JSONObject? {
+        return runCatching {
+            val root = context.getExternalFilesDir(null) ?: return null
+
+            var best: File? = null
+            root.walkTopDown()
+                .filter { it.isFile && it.name == "jread_current_pointer.json" }
+                .forEach { file ->
+                    if (best == null || file.lastModified() > (best?.lastModified() ?: 0L)) {
+                        best = file
+                    }
+                }
+
+            val f = best ?: return null
+            val obj = JSONObject(f.readText())
+
+            val ptrText = obj.optString("currentText", "").trim()
+            val cur = currentText.orEmpty().trim()
+
+            if (ptrText.isNotBlank() && cur.isNotBlank()) {
+                obj.put(
+                    "_pointerTextMatched",
+                    ptrText == cur || ptrText.lookupTextKey() == cur.lookupTextKey()
+                )
+            } else {
+                obj.put("_pointerTextMatched", false)
+            }
+
+            obj
+        }.getOrNull()
+    }
+
+    private fun isPointerMatchedForAudioCache(item: JSONObject, pointer: JSONObject?): Boolean {
+        if (pointer == null) return false
+
+        val start = pointer.optInt("startOffset", -1)
+        val end = pointer.optInt("endOffset", -1)
+        if (start < 0 || end < start) return false
+
+        val itemStart = item.optInt("startOffset", -1)
+        val itemEnd = item.optInt("endOffset", -1)
+        if (itemStart != start || itemEnd != end) return false
+
+        val pContentHash = pointer.optString("contentHash", "")
+        val iContentHash = item.optString("contentHash", "")
+        if (pContentHash.isNotBlank() && iContentHash.isNotBlank() && pContentHash != iContentHash) {
+            return false
+        }
+
+        val pSessionId = pointer.optString("sessionId", "")
+        val iSessionId = item.optString("sessionId", "")
+        if (pSessionId.isNotBlank() && iSessionId.isNotBlank() && pSessionId != iSessionId) {
+            return false
+        }
+
+        val pChapterIndex = pointer.optInt("chapterIndex", -1)
+        val iChapterIndex = item.optInt("chapterIndex", -1)
+        if (pChapterIndex >= 0 && iChapterIndex >= 0 && pChapterIndex != iChapterIndex) {
+            return false
+        }
+
+        return true
+    }
+
+    private fun putPointerFieldsForAudioCache(context: Context, currentText: String, item: JSONObject) {
+        val pointer = readCurrentPointerForAudioCache(context, currentText) ?: return
+
+        val start = pointer.optInt("startOffset", -1)
+        val end = pointer.optInt("endOffset", -1)
+
+        if (start >= 0) item.put("startOffset", start)
+        if (end >= 0) item.put("endOffset", end)
+
+        val sessionId = pointer.optString("sessionId", "")
+        if (sessionId.isNotBlank()) item.put("sessionId", sessionId)
+
+        val contentHash = pointer.optString("contentHash", "")
+        if (contentHash.isNotBlank()) item.put("contentHash", contentHash)
+
+        val chapterIndex = pointer.optInt("chapterIndex", -1)
+        if (chapterIndex >= 0) item.put("chapterIndex", chapterIndex)
+
+        val pointerText = pointer.optString("currentText", "")
+        if (pointerText.isNotBlank()) item.put("pointerText", pointerText)
+
+        item.put("pointerUpdatedAt", pointer.optLong("updatedAt", System.currentTimeMillis()))
+        item.put("pointerTextMatched", pointer.optBoolean("_pointerTextMatched", false))
     }
 
 
@@ -1624,6 +1730,7 @@ private suspend fun synthesizeQueueItemToPcm(
                   .put("text", text)
                   .put("textHash", text.md5())
                   .put("lookupTextHash", text.lookupTextKey().md5())
+                  .also { putPointerFieldsForAudioCache(context, text, it) }
                   .put("roleName", displayRole)
                   .put("displayRoleName", displayRole)
                   .put("tag", displayTag)
@@ -2749,4 +2856,203 @@ private fun writeRoleTextToDirs(
             optDouble("pitch", 1.0).toFloat() == item.pitch &&
             optDouble("volume", 1.0).toFloat() == item.volume
     }
+
+    /**
+     * Bridge 导出：把 AudioCacheFactory 现有的播放缓存片段复制到
+     * externalFiles/reader_audio_cache/exports/<requestId>/ 下，
+     * 并返回带 content:// audioUri 的 manifest。
+     *
+     * 注意：这里不合成音频，只导出现有缓存。
+     */
+    fun exportReaderAudioCacheForBridge(
+        context: Context,
+        requestId: String,
+        sessionId: String,
+        contentHash: String,
+        bookName: String,
+        chapterTitle: String,
+        chapterIndex: Int,
+        providerAuthority: String,
+    ): JSONObject {
+        val root = File(context.getExternalFilesDir(null), "reader_audio_cache")
+        if (!root.exists()) root.mkdirs()
+
+        val exportDir = File(root, "exports/${bridgeSafeFileName(requestId)}")
+        if (!exportDir.exists()) exportDir.mkdirs()
+
+        val manifestFile = bridgeFindBestAudioManifest(
+            context = context,
+            bookName = bookName,
+            chapterTitle = chapterTitle,
+            chapterIndex = chapterIndex,
+            contentHash = contentHash,
+        ) ?: throw IllegalStateException("未找到 AudioCacheFactory 已缓存音频 manifest。请先让 J.TTS 朗读/生成一些片段后再导出。")
+
+        val sourceManifest = runCatching {
+            JSONObject(manifestFile.readText())
+        }.getOrElse {
+            throw IllegalStateException("读取 AudioCacheFactory manifest 失败: ${manifestFile.absolutePath} ${it.message}")
+        }
+
+        val sourceItems = sourceManifest.optJSONArray("items") ?: JSONArray()
+        val segments = JSONArray()
+
+        for (i in 0 until sourceItems.length()) {
+            val item = sourceItems.optJSONObject(i) ?: continue
+            val path = item.optString("path", "")
+            if (path.isBlank()) continue
+
+            val src = File(path)
+            if (!src.exists() || !src.isFile || src.length() <= 0L) continue
+
+            val index = item.optInt("index", i)
+            val ext = src.extension.ifBlank {
+                when {
+                    item.optString("audioMimeType", "").contains("mpeg", true) -> "mp3"
+                    item.optString("audioMimeType", "").contains("mp4", true) -> "m4a"
+                    else -> "pcm"
+                }
+            }
+
+            val outName = "%06d_%s.%s".format(
+                index.coerceAtLeast(i),
+                bridgeSafeFileName(item.optString("textHash", "").ifBlank { src.nameWithoutExtension }),
+                ext
+            )
+            val dst = File(exportDir, outName)
+
+            if (!dst.exists() || dst.length() != src.length()) {
+                src.copyTo(dst, overwrite = true)
+            }
+
+            val audioUri = bridgeUriForFile(root, dst, providerAuthority)
+
+            val seg = JSONObject()
+            seg.put("index", index)
+            seg.put("order", i)
+            seg.put("text", item.optString("text", ""))
+            seg.put("textHash", item.optString("textHash", ""))
+            seg.put("lookupTextHash", item.optString("lookupTextHash", ""))
+            seg.put("tag", item.optString("tag", ""))
+            seg.put("voice", item.optString("voice", ""))
+            seg.put("actualVoice", item.optString("actualVoice", ""))
+            seg.put("emotion", item.optString("emotion", ""))
+            seg.put("sampleRate", item.optInt("sampleRate", 16000))
+            seg.put("startOffset", item.optInt("startOffset", -1))
+            seg.put("endOffset", item.optInt("endOffset", -1))
+            seg.put("durationMs", item.optLong("durationMs", -1L))
+            seg.put("audioUri", audioUri.toString())
+            seg.put("audioMimeType", bridgeGuessMime(dst))
+            seg.put("sizeBytes", dst.length())
+            seg.put("fileName", dst.name)
+            segments.put(seg)
+        }
+
+        if (segments.length() == 0) {
+            throw IllegalStateException("AudioCacheFactory manifest 存在，但没有可导出的音频片段: ${manifestFile.absolutePath}")
+        }
+
+        val out = JSONObject()
+        out.put("method", "exportReaderAudioCache")
+        out.put("status", "done")
+        out.put("requestId", requestId)
+        out.put("sessionId", sessionId)
+        out.put("contentHash", contentHash)
+        out.put("bookName", bookName.ifBlank { sourceManifest.optString("bookName", "") })
+        out.put("chapterTitle", chapterTitle.ifBlank { sourceManifest.optString("chapterTitle", "") })
+        out.put("chapterIndex", if (chapterIndex >= 0) chapterIndex else sourceManifest.optInt("chapterIndex", -1))
+        out.put("sourceManifestPath", manifestFile.absolutePath)
+        out.put("segmentCount", segments.length())
+        out.put("segments", segments)
+        out.put("createdAt", System.currentTimeMillis())
+
+        val exportManifest = File(exportDir, "manifest.json")
+        out.put("manifestUri", bridgeUriForFile(root, exportManifest, providerAuthority).toString())
+        exportManifest.writeText(out.toString(2))
+
+        appendPreviewLog(
+            context = context,
+            source = "缓存片段导出",
+            message = "已导出 AudioCacheFactory 缓存片段｜数量=${segments.length()}｜manifest=${exportManifest.absolutePath}"
+        )
+
+        return out
+    }
+
+    private fun bridgeFindBestAudioManifest(
+        context: Context,
+        bookName: String,
+        chapterTitle: String,
+        chapterIndex: Int,
+        contentHash: String,
+    ): File? {
+        val root = context.getExternalFilesDir(null) ?: return null
+        val manifests = root.walkTopDown()
+            .filter { it.isFile && it.name == "manifest.json" }
+            .filter { file ->
+                runCatching {
+                    val text = file.readText()
+                    text.contains("\"items\"") && text.contains("\"path\"")
+                }.getOrDefault(false)
+            }
+            .toList()
+
+        if (manifests.isEmpty()) return null
+
+        fun score(file: File): Int {
+            val text = runCatching { file.readText() }.getOrDefault("")
+            var s = 0
+            if (contentHash.isNotBlank() && text.contains(contentHash)) s += 1000
+            if (bookName.isNotBlank() && text.contains(bookName)) s += 300
+            if (chapterTitle.isNotBlank() && text.contains(chapterTitle)) s += 300
+            if (chapterIndex >= 0 && text.contains("\"chapterIndex\":$chapterIndex")) s += 200
+            if (chapterIndex >= 0 && text.contains("\"chapterIndex\": $chapterIndex")) s += 200
+            s += ((file.lastModified() / 1000L) % 100000L).toInt()
+            return s
+        }
+
+        return manifests.maxWithOrNull(compareBy<File> { score(it) }.thenBy { it.lastModified() })
+    }
+
+    private fun bridgeUriForFile(root: File, file: File, authority: String): Uri {
+        val rootFile = root.canonicalFile
+        val target = file.canonicalFile
+
+        val rootPath = rootFile.absolutePath
+        val filePath = target.absolutePath
+
+        require(filePath == rootPath || filePath.startsWith(rootPath + File.separator)) {
+            "file outside export root: $filePath"
+        }
+
+        val rel = if (filePath == rootPath) "" else filePath.substring(rootPath.length + 1)
+        val builder = Uri.Builder()
+            .scheme("content")
+            .authority(authority)
+            .appendPath("reader_audio_cache")
+
+        if (rel.isNotBlank()) {
+            rel.split(File.separatorChar).forEach { part ->
+                if (part.isNotBlank()) builder.appendPath(part)
+            }
+        }
+
+        return builder.build()
+    }
+
+    private fun bridgeGuessMime(file: File): String {
+        return when (file.extension.lowercase(Locale.ROOT)) {
+            "mp3" -> "audio/mpeg"
+            "m4a", "aac" -> "audio/mp4"
+            "wav" -> "audio/wav"
+            "pcm" -> "audio/pcm"
+            else -> "application/octet-stream"
+        }
+    }
+
+    private fun bridgeSafeFileName(value: String): String {
+        return value.ifBlank { "item" }.replace(Regex("[^A-Za-z0-9_.-]"), "_")
+    }
+
+
 }
