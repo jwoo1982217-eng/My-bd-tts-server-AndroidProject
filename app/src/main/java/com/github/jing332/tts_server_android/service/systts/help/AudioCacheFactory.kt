@@ -2864,6 +2864,151 @@ private fun writeRoleTextToDirs(
      *
      * 注意：这里不合成音频，只导出现有缓存。
      */
+
+    private fun bridgeExportAudioMimeType(file: File, item: JSONObject): String {
+        val name = file.name.lowercase(Locale.ROOT)
+        val extMime = when {
+            name.endsWith(".pcm") -> "audio/pcm"
+            name.endsWith(".wav") -> "audio/wav"
+            name.endsWith(".mp3") -> "audio/mpeg"
+            name.endsWith(".m4a") -> "audio/mp4"
+            name.endsWith(".aac") -> "audio/aac"
+            else -> ""
+        }
+        if (extMime.isNotBlank()) return extMime
+
+        val itemMime = item.optString("audioMimeType", "")
+            .ifBlank { item.optString("mimeType", "") }
+            .ifBlank { item.optString("contentType", "") }
+
+        return itemMime.ifBlank { "application/octet-stream" }
+    }
+
+    private fun bridgeExportSampleRate(item: JSONObject): Int {
+        val sr = item.optInt(
+            "sampleRate",
+            item.optInt("sample_rate", item.optInt("samplingRate", 16000))
+        )
+        return sr.coerceAtLeast(8000)
+    }
+
+    private fun bridgeExportChannelCount(item: JSONObject): Int {
+        val ch = item.optInt(
+            "channels",
+            item.optInt("channelCount", item.optInt("channel_count", 1))
+        )
+        return ch.coerceAtLeast(1)
+    }
+
+    private fun bridgeExportBitsPerSample(item: JSONObject): Int {
+        val bits = item.optInt(
+            "bitsPerSample",
+            item.optInt("bits_per_sample", item.optInt("bitDepth", 16))
+        )
+        return bits.coerceAtLeast(8)
+    }
+
+
+
+    private fun bridgeExportIsRawPcm(src: File, item: JSONObject): Boolean {
+        val name = src.name.lowercase(Locale.ROOT)
+        val mime = bridgeExportAudioMimeType(src, item)
+        return name.endsWith(".pcm") || mime.equals("audio/pcm", true)
+    }
+
+    private fun bridgeExportTargetExtension(src: File, item: JSONObject): String {
+        val name = src.name.lowercase(Locale.ROOT)
+        return when {
+            bridgeExportIsRawPcm(src, item) -> "wav"
+            name.endsWith(".wav") -> "wav"
+            name.endsWith(".mp3") -> "mp3"
+            name.endsWith(".m4a") -> "m4a"
+            name.endsWith(".aac") -> "aac"
+            bridgeExportAudioMimeType(src, item).contains("wav", true) -> "wav"
+            bridgeExportAudioMimeType(src, item).contains("mpeg", true) -> "mp3"
+            bridgeExportAudioMimeType(src, item).contains("mp4", true) -> "m4a"
+            bridgeExportAudioMimeType(src, item).contains("aac", true) -> "aac"
+            else -> src.extension.ifBlank { "bin" }.lowercase(Locale.ROOT)
+        }
+    }
+
+    private fun bridgeExportedAudioMimeType(src: File, item: JSONObject): String {
+        return if (bridgeExportIsRawPcm(src, item)) {
+            "audio/wav"
+        } else {
+            bridgeExportAudioMimeType(src, item)
+        }
+    }
+
+    private fun writeBridgeAscii(out: java.io.OutputStream, value: String) {
+        out.write(value.toByteArray(java.nio.charset.StandardCharsets.US_ASCII))
+    }
+
+    private fun writeBridgeLeShort(out: java.io.OutputStream, value: Int) {
+        out.write(value and 0xff)
+        out.write((value shr 8) and 0xff)
+    }
+
+    private fun writeBridgeLeInt(out: java.io.OutputStream, value: Int) {
+        out.write(value and 0xff)
+        out.write((value shr 8) and 0xff)
+        out.write((value shr 16) and 0xff)
+        out.write((value shr 24) and 0xff)
+    }
+
+    private fun writeBridgeRawPcmAsWav(src: File, dst: File, item: JSONObject) {
+        val sampleRate = bridgeExportSampleRate(item)
+        val channels = bridgeExportChannelCount(item)
+        val bitsPerSample = bridgeExportBitsPerSample(item)
+        val bytesPerSample = (bitsPerSample / 8).coerceAtLeast(1)
+        val dataSizeLong = src.length()
+
+        if (dataSizeLong <= 0L) {
+            throw IllegalStateException("PCM 文件为空: ${src.absolutePath}")
+        }
+        if (dataSizeLong > Int.MAX_VALUE - 44L) {
+            throw IllegalStateException("PCM 文件过大，无法写 WAV header: ${src.absolutePath}")
+        }
+
+        val dataSize = dataSizeLong.toInt()
+        val byteRate = sampleRate * channels * bytesPerSample
+        val blockAlign = channels * bytesPerSample
+
+        dst.parentFile?.mkdirs()
+
+        java.io.FileOutputStream(dst).use { out ->
+            writeBridgeAscii(out, "RIFF")
+            writeBridgeLeInt(out, 36 + dataSize)
+            writeBridgeAscii(out, "WAVE")
+
+            writeBridgeAscii(out, "fmt ")
+            writeBridgeLeInt(out, 16)
+            writeBridgeLeShort(out, 1)
+            writeBridgeLeShort(out, channels)
+            writeBridgeLeInt(out, sampleRate)
+            writeBridgeLeInt(out, byteRate)
+            writeBridgeLeShort(out, blockAlign)
+            writeBridgeLeShort(out, bitsPerSample)
+
+            writeBridgeAscii(out, "data")
+            writeBridgeLeInt(out, dataSize)
+
+            src.inputStream().use { input ->
+                input.copyTo(out)
+            }
+        }
+    }
+
+    private fun bridgeExportCopyOrWrapAudio(src: File, dst: File, item: JSONObject) {
+        if (bridgeExportIsRawPcm(src, item)) {
+            writeBridgeRawPcmAsWav(src, dst, item)
+        } else {
+            dst.parentFile?.mkdirs()
+            src.copyTo(dst, overwrite = true)
+        }
+    }
+
+
     fun exportReaderAudioCacheForBridge(
         context: Context,
         requestId: String,
@@ -2904,15 +3049,10 @@ private fun writeRoleTextToDirs(
 
             val src = File(path)
             if (!src.exists() || !src.isFile || src.length() <= 0L) continue
+            if (!isAudioCacheFile(src)) continue
 
             val index = item.optInt("index", i)
-            val ext = src.extension.ifBlank {
-                when {
-                    item.optString("audioMimeType", "").contains("mpeg", true) -> "mp3"
-                    item.optString("audioMimeType", "").contains("mp4", true) -> "m4a"
-                    else -> "pcm"
-                }
-            }
+            val ext = bridgeExportTargetExtension(src, item)
 
             val outName = "%06d_%s.%s".format(
                 index.coerceAtLeast(i),
@@ -2921,8 +3061,14 @@ private fun writeRoleTextToDirs(
             )
             val dst = File(exportDir, outName)
 
-            if (!dst.exists() || dst.length() != src.length()) {
-                src.copyTo(dst, overwrite = true)
+            val expectedSize = if (bridgeExportIsRawPcm(src, item)) {
+                src.length() + 44L
+            } else {
+                src.length()
+            }
+
+            if (!dst.exists() || dst.length() != expectedSize) {
+                bridgeExportCopyOrWrapAudio(src, dst, item)
             }
 
             val audioUri = bridgeUriForFile(root, dst, providerAuthority)
@@ -2937,12 +3083,17 @@ private fun writeRoleTextToDirs(
             seg.put("voice", item.optString("voice", ""))
             seg.put("actualVoice", item.optString("actualVoice", ""))
             seg.put("emotion", item.optString("emotion", ""))
-            seg.put("sampleRate", item.optInt("sampleRate", 16000))
             seg.put("startOffset", item.optInt("startOffset", -1))
             seg.put("endOffset", item.optInt("endOffset", -1))
             seg.put("durationMs", item.optLong("durationMs", -1L))
             seg.put("audioUri", audioUri.toString())
-            seg.put("audioMimeType", bridgeGuessMime(dst))
+            seg.put("audioMimeType", bridgeExportedAudioMimeType(src, item))
+            seg.put("sourceAudioMimeType", bridgeExportAudioMimeType(src, item))
+            seg.put("wrappedFromPcm", bridgeExportIsRawPcm(src, item))
+            seg.put("sampleRate", bridgeExportSampleRate(item))
+            seg.put("channels", bridgeExportChannelCount(item))
+            seg.put("channelCount", bridgeExportChannelCount(item))
+            seg.put("bitsPerSample", bridgeExportBitsPerSample(item))
             seg.put("sizeBytes", dst.length())
             seg.put("fileName", dst.name)
             segments.put(seg)

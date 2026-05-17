@@ -33,6 +33,8 @@ public class JttsReadingPointerReceiver extends BroadcastReceiver {
                     File out = new File(dir, "jread_current_pointer.json");
                     writeText(out, ptr.toString(2));
 
+                    mirrorPointerToAllPluginDirs(context, ptr);
+
                     // 同时写一份到 external files 根目录，方便 Termux / 文件管理器确认广播是否真的生效。
                     try {
                         File ext = context.getExternalFilesDir(null);
@@ -187,6 +189,34 @@ public class JttsReadingPointerReceiver extends BroadcastReceiver {
             this.lastModified = lastModified;
         }
     }
+
+
+    private void mirrorPointerToAllPluginDirs(Context context, JSONObject ptr) {
+        try {
+            File extRoot = context.getExternalFilesDir(null);
+            if (extRoot == null) return;
+
+            if (!extRoot.exists()) extRoot.mkdirs();
+
+            writeText(new File(extRoot, "jread_current_pointer.json"), ptr.toString(2));
+
+            File pluginRoot = new File(extRoot, "plugins");
+            if (!pluginRoot.exists()) return;
+
+            File[] list = pluginRoot.listFiles();
+            if (list == null) return;
+
+            for (int i = 0; i < list.length; i++) {
+                File dir = list[i];
+                if (dir != null && dir.isDirectory()) {
+                    writeText(new File(dir, "jread_current_pointer.json"), ptr.toString(2));
+                }
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "mirrorPointerToAllPluginDirs failed", t);
+        }
+    }
+
 
     private void writeText(File f, String text) throws Exception {
         File parent = f.getParentFile();

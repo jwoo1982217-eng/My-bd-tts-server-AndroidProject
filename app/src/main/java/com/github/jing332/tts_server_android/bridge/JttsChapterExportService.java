@@ -150,6 +150,7 @@ public class JttsChapterExportService extends Service {
                     if (ACTION_IMPORT_READING_POINTER.equals(intent.getAction())) {
                         sendImportPointerResult(req, "failed", -1, null, String.valueOf(t));
                     } else if (importContextOnly) {
+                        try { writeImportContextDebug(req, "failed", null, null, String.valueOf(t)); } catch (Throwable ignored) {}
                         sendImportContextResult(req, "failed", -1, null, String.valueOf(t));
                     } else {
                         sendResult(req, "failed", -1, null, String.valueOf(t));
@@ -219,6 +220,7 @@ public class JttsChapterExportService extends Service {
         if (!dataDir.exists()) dataDir.mkdirs();
 
         writeText(new File(dataDir, "jread_current_pointer.json"), ptr.toString(2));
+        mirrorPointerToAllPluginDirs(ptr);
 
         JSONObject manifest = new JSONObject();
         manifest.put("method", "importReadingPointer");
@@ -270,11 +272,168 @@ public class JttsChapterExportService extends Service {
     }
 
 
+
+    private void mirrorImportedChapterContextToExternal(Bundle req, JSONObject chapter, String source) {
+        try {
+            File extRoot = getExternalFilesDir(null);
+            if (extRoot == null) {
+                writeImportContextDebug(req, "failed", chapter, source, "getExternalFilesDir(null) 返回 null");
+                return;
+            }
+
+            if (!extRoot.exists()) extRoot.mkdirs();
+
+            File pluginDir = new File(extRoot, "plugins/mingwuyan_2_94_noweb_marker");
+            if (!pluginDir.exists()) pluginDir.mkdirs();
+
+            writeChapterContextFilesToDir(extRoot, chapter, source);
+
+            mirrorChapterContextToAllPluginDirs(extRoot, chapter, source);
+            writeChapterContextFilesToDir(pluginDir, chapter, source);
+
+            writeImportContextDebug(req, "done", chapter, source,
+                    "written extRoot=" + extRoot.getAbsolutePath() +
+                            " pluginDir=" + pluginDir.getAbsolutePath());
+        } catch (Throwable t) {
+            try { writeImportContextDebug(req, "failed", chapter, source, String.valueOf(t)); } catch (Throwable ignored) {}
+            Log.w(TAG, "mirrorImportedChapterContextToExternal failed", t);
+        }
+    }
+
+
+    private void mirrorChapterContextToAllPluginDirs(File extRoot, JSONObject chapter, String source) {
+        try {
+            if (extRoot == null) return;
+
+            File pluginRoot = new File(extRoot, "plugins");
+            if (!pluginRoot.exists()) return;
+
+            File[] list = pluginRoot.listFiles();
+            if (list == null) return;
+
+            for (int i = 0; i < list.length; i++) {
+                File dir = list[i];
+                if (dir != null && dir.isDirectory()) {
+                    writeChapterContextFilesToDir(dir, chapter, source);
+                }
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "mirrorChapterContextToAllPluginDirs failed", t);
+        }
+    }
+
+
+
+    private void mirrorPointerToAllPluginDirs(JSONObject ptr) {
+        try {
+            File extRoot = getExternalFilesDir(null);
+            if (extRoot == null) return;
+
+            if (!extRoot.exists()) extRoot.mkdirs();
+
+            writeText(new File(extRoot, "jread_current_pointer.json"), ptr.toString(2));
+
+            File pluginRoot = new File(extRoot, "plugins");
+            if (!pluginRoot.exists()) return;
+
+            File[] list = pluginRoot.listFiles();
+            if (list == null) return;
+
+            for (int i = 0; i < list.length; i++) {
+                File dir = list[i];
+                if (dir != null && dir.isDirectory()) {
+                    writeText(new File(dir, "jread_current_pointer.json"), ptr.toString(2));
+                }
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "mirrorPointerToAllPluginDirs failed", t);
+        }
+    }
+
+
+    private void writeChapterContextFilesToDir(File dir, JSONObject chapter, String source) throws Exception {
+        if (dir == null) return;
+        if (!dir.exists()) dir.mkdirs();
+
+        String bookName = chapter.optString("bookName",
+                chapter.optString("book",
+                        chapter.optString("bookTitle",
+                                chapter.optString("title", ""))));
+
+        String chapterTitle = chapter.optString("chapterTitle", "");
+        String sessionId = chapter.optString("sessionId", "");
+        String contentHash = chapter.optString("contentHash", "");
+        String chapterContent = chapter.optString("chapterContent", "");
+
+        writeText(new File(dir, "jread_current_chapter.json"), chapter.toString(2));
+
+        if (bookName != null && bookName.trim().length() > 0) {
+            writeText(new File(dir, "cunfang.txt"), bookName.trim());
+        }
+
+        JSONObject meta = new JSONObject();
+        meta.put("source", source == null ? "chapterContextUri" : source);
+        meta.put("sessionId", sessionId);
+        meta.put("bookName", bookName);
+        meta.put("book", bookName);
+        meta.put("bookTitle", bookName);
+        meta.put("title", bookName);
+        meta.put("chapterTitle", chapterTitle);
+        meta.put("chapterIndex", chapter.opt("chapterIndex"));
+        meta.put("contentHash", contentHash);
+        meta.put("chapterContentLength", chapterContent.length());
+        meta.put("updatedAt", System.currentTimeMillis());
+
+        writeText(new File(dir, "cache_book_context_meta.json"), meta.toString(2));
+    }
+
+    private void writeImportContextDebug(Bundle req, String status, JSONObject chapter, String source, String message) {
+        try {
+            File extRoot = getExternalFilesDir(null);
+            if (extRoot == null) return;
+            if (!extRoot.exists()) extRoot.mkdirs();
+
+            JSONObject debug = new JSONObject();
+            debug.put("receiver", "JttsChapterExportService");
+            debug.put("method", "importChapterContext");
+            debug.put("status", status);
+            debug.put("requestId", req == null ? "" : req.getString(EXTRA_REQUEST_ID, ""));
+            debug.put("sessionId", req == null ? "" : req.getString(EXTRA_SESSION_ID, ""));
+            debug.put("contentHash", req == null ? "" : req.getString(EXTRA_CONTENT_HASH, ""));
+            debug.put("chapterContextUri", req == null ? "" : req.getString(EXTRA_CHAPTER_CONTEXT_URI, ""));
+            debug.put("source", source == null ? "" : source);
+            debug.put("message", message == null ? "" : message);
+            debug.put("externalDir", extRoot.getAbsolutePath());
+            debug.put("updatedAt", System.currentTimeMillis());
+
+            if (chapter != null) {
+                debug.put("bookName", chapter.optString("bookName",
+                        chapter.optString("book",
+                                chapter.optString("bookTitle",
+                                        chapter.optString("title", "")))));
+                debug.put("chapterTitle", chapter.optString("chapterTitle", ""));
+                debug.put("chapterIndex", chapter.opt("chapterIndex"));
+                debug.put("chapterContentLength", chapter.optString("chapterContent", "").length());
+                debug.put("chapterSessionId", chapter.optString("sessionId", ""));
+                debug.put("chapterContentHash", chapter.optString("contentHash", ""));
+            }
+
+            writeText(new File(extRoot, "jtts_chapter_context_import_debug.txt"), debug.toString(2));
+        } catch (Throwable t) {
+            Log.w(TAG, "writeImportContextDebug failed", t);
+        }
+    }
+
+
     private void importChapterContextOnly(Bundle req) throws Exception {
         sendImportContextResult(req, "running", 0, null, null);
 
+        writeImportContextDebug(req, "received", null, null, null);
+
         ChapterLoadResult loadedChapter = loadChapterFromRequestOrCache(req);
         JSONObject chapter = loadedChapter.chapter;
+
+        mirrorImportedChapterContextToExternal(req, chapter, loadedChapter.source);
 
         String requestId = req.getString(EXTRA_REQUEST_ID, "import_" + System.currentTimeMillis());
         String sessionId = chapter.optString("sessionId", req.getString(EXTRA_SESSION_ID, ""));

@@ -302,6 +302,15 @@
             </intent-filter>
         </receiver>
 
+    
+        <receiver
+            android:name="com.github.jing332.tts_server_android.bridge.JttsChapterContextReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.jtts.action.IMPORT_CHAPTER_CONTEXT" />
+            </intent-filter>
+        </receiver>
+
     </application>
 
 </manifest>

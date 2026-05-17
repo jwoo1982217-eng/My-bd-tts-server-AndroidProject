@@ -209,7 +209,7 @@ class PluginTtsUI : IConfigUI() {
 
             val hasStandardVoiceList = realVm.voices.isNotEmpty()
             val saveTts = if (tts.voice.isBlank() && hasStandardVoiceList) {
-                tts.copy(voice = realVm.voices.first().id)
+                tts.copy(voice = tts.voice.ifBlank { realVm.voices.firstOrNull()?.id.orEmpty() })
             } else {
                 tts
             }
@@ -351,7 +351,7 @@ class PluginTtsUI : IConfigUI() {
                     onAudition = {
                         val hasStandardVoiceList = realVm.voices.isNotEmpty()
                         val auditionTts = if (tts.voice.isBlank() && hasStandardVoiceList) {
-                            tts.copy(voice = realVm.voices.first().id)
+                            tts.copy(voice = tts.voice.ifBlank { realVm.voices.firstOrNull()?.id.orEmpty() })
                         } else {
                             tts
                         }
