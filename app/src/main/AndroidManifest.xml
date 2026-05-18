@@ -290,6 +290,7 @@
             android:foregroundServiceType="dataSync">
             <intent-filter>
                 <action android:name="com.jtts.action.EXPORT_READER_AUDIO_CACHE" />
+                <action android:name="com.jtts.action.ACK_READER_AUDIO_CACHE" />
             </intent-filter>
         </service>
 

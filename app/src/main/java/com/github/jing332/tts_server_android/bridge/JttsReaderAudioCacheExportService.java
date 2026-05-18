@@ -31,6 +31,7 @@ import java.util.concurrent.Executors;
 public class JttsReaderAudioCacheExportService extends Service {
     private static final String TAG = "JttsReaderAudioCacheExport";
     public static final String ACTION_EXPORT_READER_AUDIO_CACHE = "com.jtts.action.EXPORT_READER_AUDIO_CACHE";
+    public static final String ACTION_ACK_READER_AUDIO_CACHE = "com.jtts.action.ACK_READER_AUDIO_CACHE";
     public static final String ACTION_EXPORT_READER_AUDIO_CACHE_RESULT = "com.jtts.action.EXPORT_READER_AUDIO_CACHE_RESULT";
     private static final String ACTION_EXPORT = "com.jtts.action.EXPORT_CHAPTER_AUDIO";
     private static final String ACTION_IMPORT_CONTEXT = "com.jtts.action.IMPORT_CHAPTER_CONTEXT";
@@ -103,20 +104,25 @@ public class JttsReaderAudioCacheExportService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent == null || !ACTION_EXPORT_READER_AUDIO_CACHE.equals(intent.getAction())) {
+        if (intent == null || (!ACTION_EXPORT_READER_AUDIO_CACHE.equals(intent.getAction()) && !ACTION_ACK_READER_AUDIO_CACHE.equals(intent.getAction()))) {
             stopSelf(startId);
             return START_NOT_STICKY;
         }
 
         startBridgeForeground(intent.getAction());
 
+        final String action = intent.getAction();
         Bundle req = intent.getExtras() == null ? new Bundle() : new Bundle(intent.getExtras());
 
         executor.execute(new Runnable() {
             @Override
             public void run() {
                 try {
-                    exportReaderAudioCache(req);
+                    if (ACTION_ACK_READER_AUDIO_CACHE.equals(action)) {
+                          ackReaderAudioCache(req);
+                      } else {
+                          exportReaderAudioCache(req);
+                      }
                 } catch (Throwable t) {
                     Log.e(TAG, "export reader audio cache failed", t);
                     sendResult(req, "failed", -1, null, String.valueOf(t));
@@ -132,6 +138,225 @@ public class JttsReaderAudioCacheExportService extends Service {
     @Override
     public void onDestroy() {
         super.onDestroy();
+    }
+
+
+    private void ackReaderAudioCache(Bundle req) throws Exception {
+        sendResult(req, "running", 0, null, null);
+
+        String requestId = req.getString(EXTRA_REQUEST_ID, "");
+        if (requestId == null || requestId.trim().length() == 0) {
+            requestId = req.getString("taskId", "");
+        }
+        String taskId = req.getString("taskId", requestId);
+        String sessionId = req.getString("sessionId", "");
+        String callerPackage = req.getString(EXTRA_CALLER_PACKAGE, "");
+        String ackStatus = req.getString("status", "success");
+        if (!"success".equalsIgnoreCase(ackStatus) && !"done".equalsIgnoreCase(ackStatus)) {
+            throw new RuntimeException("ACK status 不是 success/done，拒绝删除缓存: " + ackStatus);
+        }
+
+        String contentHash = req.getString("contentHash", "");
+        int expectedSegmentCount = req.getInt("segmentCount", -1);
+        int consumedCount = req.getInt("consumedCount", -1);
+        if (expectedSegmentCount < 0 && consumedCount >= 0) {
+            expectedSegmentCount = consumedCount;
+        }
+        int consumedSeqStart = req.getInt("consumedSeqStart", -1);
+        int consumedSeqEnd = req.getInt("consumedSeqEnd", -1);
+        String manifestJson = req.getString("manifestJson", "");
+
+        File root = cacheRoot().getCanonicalFile();
+        JSONObject manifest = null;
+        File ackManifestFile = null;
+
+        if (manifestJson != null && manifestJson.trim().length() > 0) {
+            manifest = new JSONObject(manifestJson);
+        }
+
+        if (manifest == null) {
+            String manifestPath = req.getString("manifestPath", "");
+            if (manifestPath != null && manifestPath.trim().length() > 0) {
+                File f = new File(manifestPath.trim()).getCanonicalFile();
+                ensureUnderReaderCacheRoot(root, f);
+                ackManifestFile = f;
+                manifest = new JSONObject(readText(f, 10 * 1024 * 1024));
+            }
+        }
+
+        if (manifest == null && requestId != null && requestId.trim().length() > 0) {
+            File exportDir = new File(new File(root, "exports"), safeFileName(requestId.trim()));
+            File f = new File(exportDir, "manifest.json");
+            if (!f.exists()) {
+                f = new File(new File(new File(root, "exports"), requestId.trim()), "manifest.json");
+            }
+            if (f.exists() && f.isFile()) {
+                ackManifestFile = f.getCanonicalFile();
+                ensureUnderReaderCacheRoot(root, ackManifestFile);
+                manifest = new JSONObject(readText(ackManifestFile, 10 * 1024 * 1024));
+            }
+        }
+
+        if (manifest == null) {
+            throw new RuntimeException("ACK 缺少 manifestJson / manifestPath，且无法通过 requestId 找到导出 manifest");
+        }
+
+        if (contentHash != null && contentHash.length() > 0) {
+            String gotHash = manifest.optString("contentHash", "");
+            if (gotHash.length() > 0 && !contentHash.equals(gotHash)) {
+                throw new RuntimeException("ACK contentHash 不匹配: request=" + contentHash + " manifest=" + gotHash);
+            }
+        }
+
+        if (sessionId != null && sessionId.length() > 0) {
+            String gotSessionId = manifest.optString("sessionId", "");
+            if (gotSessionId.length() > 0 && !sessionId.equals(gotSessionId)) {
+                throw new RuntimeException("ACK sessionId 不匹配: request=" + sessionId + " manifest=" + gotSessionId);
+            }
+        }
+
+        JSONArray segments = manifest.optJSONArray("segments");
+        if (segments == null) segments = manifest.optJSONArray("items");
+        if (segments == null || segments.length() == 0) {
+            throw new RuntimeException("ACK manifest 没有 segments/items，拒绝删除缓存");
+        }
+
+        if (expectedSegmentCount >= 0 && expectedSegmentCount != segments.length()) {
+            throw new RuntimeException("ACK segmentCount 不匹配: request=" + expectedSegmentCount + " manifest=" + segments.length());
+        }
+
+        int minSeq = Integer.MAX_VALUE;
+        int maxSeq = Integer.MIN_VALUE;
+        for (int i = 0; i < segments.length(); i++) {
+            JSONObject seg = segments.optJSONObject(i);
+            if (seg == null) continue;
+            int seq = seg.optInt("seq", seg.optInt("index", i));
+            if (seq < minSeq) minSeq = seq;
+            if (seq > maxSeq) maxSeq = seq;
+        }
+        if (consumedSeqStart >= 0 && minSeq != consumedSeqStart) {
+            throw new RuntimeException("ACK consumedSeqStart 不匹配: request=" + consumedSeqStart + " manifestMin=" + minSeq);
+        }
+        if (consumedSeqEnd >= 0 && maxSeq != consumedSeqEnd) {
+            throw new RuntimeException("ACK consumedSeqEnd 不匹配: request=" + consumedSeqEnd + " manifestMax=" + maxSeq);
+        }
+        if (consumedCount >= 0 && consumedCount != segments.length()) {
+            throw new RuntimeException("ACK consumedCount 不匹配: request=" + consumedCount + " manifest=" + segments.length());
+        }
+
+        JSONArray deletedFiles = new JSONArray();
+        JSONArray skippedFiles = new JSONArray();
+        int deletedCount = 0;
+        long deletedBytes = 0L;
+
+        for (int i = 0; i < segments.length(); i++) {
+            JSONObject seg = segments.optJSONObject(i);
+            if (seg == null) continue;
+
+            String rel = seg.optString("file", "");
+            if (rel == null || rel.length() == 0) {
+                rel = seg.optString("fileName", "");
+            }
+            if (rel == null || rel.length() == 0) {
+                skippedFiles.put("missing-file-field@" + i);
+                continue;
+            }
+
+            File f = resolveReaderCacheFile(root, rel);
+            if (!f.exists() || !f.isFile()) {
+                skippedFiles.put(rel);
+                continue;
+            }
+
+            long expectedLength = seg.optLong("length", seg.optLong("sizeBytes", -1L));
+            if (expectedLength > 0L && f.length() != expectedLength) {
+                throw new RuntimeException("ACK 删除前长度校验失败: " + rel + ", expected=" + expectedLength + ", actual=" + f.length());
+            }
+
+            long len = f.length();
+            if (f.delete()) {
+                deletedCount++;
+                deletedBytes += len;
+                deletedFiles.put(rel);
+                deleteEmptyParents(root, f);
+            } else {
+                skippedFiles.put(rel);
+            }
+        }
+
+        if (ackManifestFile == null && requestId != null && requestId.trim().length() > 0) {
+            File exportDir = new File(new File(root, "exports"), safeFileName(requestId.trim()));
+            File f = new File(exportDir, "manifest.json");
+            if (f.exists() && f.isFile()) ackManifestFile = f.getCanonicalFile();
+        }
+
+        if (ackManifestFile != null && ackManifestFile.exists() && ackManifestFile.isFile()) {
+            try {
+                ensureUnderReaderCacheRoot(root, ackManifestFile);
+                ackManifestFile.delete();
+                deleteEmptyParents(root, ackManifestFile);
+            } catch (Throwable ignored) {
+            }
+        }
+
+        JSONObject out = new JSONObject();
+        out.put("method", "ackReaderAudioCache");
+        out.put("status", "done");
+        out.put("requestId", requestId);
+        out.put("taskId", taskId);
+        out.put("sessionId", sessionId);
+        out.put("callerPackage", callerPackage);
+        out.put("contentHash", manifest.optString("contentHash", contentHash));
+        out.put("segmentCount", segments.length());
+        out.put("consumedSeqStart", minSeq == Integer.MAX_VALUE ? -1 : minSeq);
+        out.put("consumedSeqEnd", maxSeq == Integer.MIN_VALUE ? -1 : maxSeq);
+        out.put("consumedCount", segments.length());
+        out.put("deletedCount", deletedCount);
+        out.put("deletedBytes", deletedBytes);
+        out.put("deletedFiles", deletedFiles);
+        out.put("skippedFiles", skippedFiles);
+        out.put("updatedAt", System.currentTimeMillis());
+
+        Log.i(TAG, "reader audio cache ack done requestId=" + requestId + " deleted=" + deletedCount + " bytes=" + deletedBytes);
+        sendResult(req, "done", 100, out, null);
+    }
+
+    private File resolveReaderCacheFile(File root, String relativePath) throws Exception {
+        if (relativePath == null || relativePath.length() == 0 || relativePath.contains("://")) {
+            throw new RuntimeException("非法缓存相对路径: " + relativePath);
+        }
+        File f = new File(root, relativePath).getCanonicalFile();
+        ensureUnderReaderCacheRoot(root, f);
+        return f;
+    }
+
+    private void ensureUnderReaderCacheRoot(File root, File file) throws Exception {
+        File r = root.getCanonicalFile();
+        File f = file.getCanonicalFile();
+        String rootPath = r.getAbsolutePath();
+        String filePath = f.getAbsolutePath();
+        if (!filePath.equals(rootPath) && !filePath.startsWith(rootPath + File.separator)) {
+            throw new RuntimeException("拒绝访问 reader_audio_cache 外部路径: " + filePath);
+        }
+    }
+
+    private void deleteEmptyParents(File root, File file) {
+        try {
+            File r = root.getCanonicalFile();
+            File dir = file.getParentFile();
+            while (dir != null) {
+                File d = dir.getCanonicalFile();
+                if (d.equals(r)) break;
+                String[] children = d.list();
+                if (children != null && children.length == 0) {
+                    d.delete();
+                    dir = d.getParentFile();
+                } else {
+                    break;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     private File cacheRoot() {

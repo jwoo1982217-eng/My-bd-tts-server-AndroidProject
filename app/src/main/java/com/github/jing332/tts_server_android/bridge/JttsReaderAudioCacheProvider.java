@@ -65,12 +65,13 @@ public class JttsReaderAudioCacheProvider extends ContentProvider {
             int dot = name.lastIndexOf('.');
             if (dot >= 0 && dot < name.length() - 1) {
                 String ext = name.substring(dot + 1).toLowerCase();
-                String mt = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext);
-                if (mt != null) return mt;
+                if ("pcm".equals(ext)) return "audio/pcm";
                 if ("wav".equals(ext)) return "audio/wav";
                 if ("mp3".equals(ext)) return "audio/mpeg";
                 if ("m4a".equals(ext) || "aac".equals(ext)) return "audio/mp4";
                 if ("json".equals(ext)) return "application/json";
+                String mt = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext);
+                if (mt != null) return mt;
             }
         } catch (Throwable ignored) {}
         return "application/octet-stream";
