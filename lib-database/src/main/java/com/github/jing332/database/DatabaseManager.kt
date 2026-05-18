@@ -7,6 +7,7 @@ import androidx.room.DeleteColumn
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.AutoMigrationSpec
+import androidx.room.SkipQueryVerification
 import com.github.jing332.database.dao.PluginDao
 import com.github.jing332.database.dao.ReplaceRuleDao
 import com.github.jing332.database.dao.SpeechRuleDao
@@ -28,6 +29,7 @@ val dbm: DatabaseManager by lazy {
 }
 
 
+@SkipQueryVerification
 @Database(
     version = 30,
     entities = [

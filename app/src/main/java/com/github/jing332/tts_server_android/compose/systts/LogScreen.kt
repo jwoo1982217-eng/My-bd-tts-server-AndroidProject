@@ -85,30 +85,6 @@ private data class DisplayLogEntry(
     val color: Color,
 )
 
-private enum class LogViewMode(val title: String) {
-    Preload("规则运行日志"),
-    Reader("朗读执行")
-}
-
-private fun isReaderCallLog(message: String): Boolean {
-    return message.contains("调用缓存音频", ignoreCase = true) ||
-            message.contains("reader audio cache hit", ignoreCase = true) ||
-            message.contains("cache hit", ignoreCase = true) ||
-            message.contains("cache miss", ignoreCase = true) ||
-            message.contains("缓存未命中", ignoreCase = true) ||
-            message.contains("读取缓存", ignoreCase = true)
-}
-
-private fun isPreloadLog(message: String): Boolean {
-    return message.contains("请求音频", ignoreCase = true) ||
-            message.contains("获取成功", ignoreCase = true) ||
-            message.contains("获取失败", ignoreCase = true) ||
-            message.contains("写入缓存", ignoreCase = true) ||
-            message.contains("预缓存", ignoreCase = true) ||
-            message.contains("缓存队列", ignoreCase = true) ||
-            message.contains("AudioCache", ignoreCase = true)
-}
-
 private fun logColorFromChar(
     levelChar: String,
     isDarkTheme: Boolean,
@@ -314,8 +290,6 @@ fun LogScreen(
 
     var filterPluginLog by rememberSaveable { mutableStateOf(false) }
     var filterSpeechRuleLog by rememberSaveable { mutableStateOf(false) }
-
-    var selectedLogViewMode by rememberSaveable { mutableStateOf(LogViewMode.Preload.name) }
 
     var tempFilterError by rememberSaveable { mutableStateOf(false) }
     var tempFilterWarn by rememberSaveable { mutableStateOf(false) }
@@ -609,7 +583,6 @@ fun LogScreen(
         filterVerbose,
         filterPluginLog,
         filterSpeechRuleLog,
-        selectedLogViewMode,
         refreshTick
     ) {
         val selectedLevels = buildSet {
@@ -625,11 +598,6 @@ fun LogScreen(
         sourceLogs.filter { log ->
             val msg = log.message
 
-            val modeMatched = when (selectedLogViewMode) {
-                LogViewMode.Reader.name -> isReaderCallLog(msg)
-                else -> isPreloadLog(msg) && !isReaderCallLog(msg)
-            }
-
             val levelMatched =
                 !levelFilterEnabled || selectedLevels.contains(log.levelChar.uppercase())
 
@@ -642,7 +610,7 @@ fun LogScreen(
                         (filterPluginLog && plugin) ||
                         (filterSpeechRuleLog && speechRule)
 
-            modeMatched && levelMatched && debugMatched
+            levelMatched && debugMatched
         }
     }
 
@@ -807,8 +775,7 @@ fun LogScreen(
             filterDebug,
             filterVerbose,
             filterPluginLog,
-            filterSpeechRuleLog,
-            selectedLogViewMode
+            filterSpeechRuleLog
         ) {
             if (filteredList.isNotEmpty() && autoFollowBottom && !showHistoryResult) {
                 delay(80)
@@ -913,36 +880,6 @@ fun LogScreen(
                     }
                 }
             }
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 24.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                LogViewMode.values().forEach { mode ->
-                    FilterChip(
-                        selected = selectedLogViewMode == mode.name,
-                        onClick = {
-                            selectedLogViewMode = mode.name
-                            autoFollowBottom = true
-                        },
-                        label = { Text(mode.title) }
-                    )
-                    Spacer(Modifier.width(8.dp))
-                }
-            }
-
-            Text(
-                text = if (selectedLogViewMode == LogViewMode.Reader.name) {
-                    "朗读执行：只看 J.阅读朗读时请求缓存、命中缓存、调用缓存音频。"
-                } else {
-                    "规则运行日志：只看后台提前请求音频、获取成功、写入缓存、缓存库。"
-                },
-                modifier = Modifier.padding(horizontal = 24.dp, vertical = 2.dp),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
 
             Box(
                 modifier = Modifier

@@ -1,0 +1,33 @@
+name: Build DB Debug APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix-reader-cache-pcm-handoff
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Build DB Debug APK
+        run: ./gradlew :app:assembleDbDebug --no-daemon --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-debug-apk
+          path: app/build/outputs/apk/db/debug/*.apk

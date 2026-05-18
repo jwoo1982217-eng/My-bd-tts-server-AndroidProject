@@ -27,10 +27,11 @@
 
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <application
+        android:largeHeap="true"
         android:name=".App"
         android:allowBackup="true"
         android:icon="@mipmap/ic_app_launcher"
-        android:label="J.TTS Server"
+        android:label="J.TTS Bridge"
         android:requestLegacyExternalStorage="true"
         android:roundIcon="@mipmap/ic_app_launcher_round"
         android:supportsRtl="true"
@@ -201,7 +202,7 @@
             android:name=".service.systts.SystemTtsService"
             android:exported="true"
             android:foregroundServiceType="mediaPlayback"
-            android:label="J.TTS Server"
+            android:label="J.TTS Bridge"
             tools:ignore="ExportedService">
             <intent-filter>
                 <action android:name="android.intent.action.TTS_SERVICE" />
@@ -257,6 +258,59 @@
             android:name=".provider.LegadoBridgeProvider"
             android:authorities="${applicationId}.legado.bridge"
             android:exported="true" />
+
+    
+        <service
+            android:name="com.github.jing332.tts_server_android.bridge.JttsChapterExportService"
+            android:exported="true" 
+            android:foregroundServiceType="dataSync">
+            <intent-filter>
+                <action android:name="com.jtts.action.EXPORT_CHAPTER_AUDIO" />
+                <action android:name="com.jtts.action.IMPORT_CHAPTER_CONTEXT" />
+                <action android:name="com.jtts.action.IMPORT_READING_POINTER" />
+            </intent-filter>
+        </service>
+
+        <provider
+            android:name="com.github.jing332.tts_server_android.bridge.JttsExportContentProvider"
+            android:authorities="com.github.jing332.tts_server_android.jtts.export.provider"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
+    
+        <provider
+            android:name="com.github.jing332.tts_server_android.bridge.JttsReaderAudioCacheProvider"
+            android:authorities="${applicationId}.jtts.reader.cache.provider"
+            android:exported="true"
+            android:grantUriPermissions="true" />
+
+        <service
+            android:name="com.github.jing332.tts_server_android.bridge.JttsReaderAudioCacheExportService"
+            android:exported="true"
+            android:foregroundServiceType="dataSync">
+            <intent-filter>
+                <action android:name="com.jtts.action.EXPORT_READER_AUDIO_CACHE" />
+                <action android:name="com.jtts.action.ACK_READER_AUDIO_CACHE" />
+            </intent-filter>
+        </service>
+
+    
+        <receiver
+            android:name="com.github.jing332.tts_server_android.bridge.JttsReadingPointerReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.jtts.action.IMPORT_READING_POINTER" />
+            </intent-filter>
+        </receiver>
+
+    
+        <receiver
+            android:name="com.github.jing332.tts_server_android.bridge.JttsChapterContextReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.jtts.action.IMPORT_CHAPTER_CONTEXT" />
+            </intent-filter>
+        </receiver>
 
     </application>
 

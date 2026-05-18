@@ -116,6 +116,7 @@ abstract class AbsForwarderService(
     }
 
     protected fun sendLog(log: LogEntry) {
+        ForwarderLogHistory.add(log)
         val intent = Intent(actionLog).apply { putExtra(KeyConst.KEY_DATA, log) }
         AppConst.localBroadcast.sendBroadcast(intent)
     }

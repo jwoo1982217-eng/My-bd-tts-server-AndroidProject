@@ -1,6 +1,7 @@
 package com.github.jing332.tts_server_android.service.systts.help
 
 import android.content.Context
+import android.net.Uri
 import com.github.jing332.common.utils.StringUtils
 import com.github.jing332.database.dbm
 import com.github.jing332.database.entities.SpeechRule
@@ -10,6 +11,7 @@ import com.github.jing332.database.entities.systts.source.PluginTtsSource
 import com.github.jing332.tts.MixSynthesizer
 import com.github.jing332.tts.SynthesizerContext
 import com.github.jing332.tts.synthesizer.RequestPayload
+import com.github.jing332.tts.synthesizer.CacheRequestPayloadRecorder
 import com.github.jing332.tts.synthesizer.SystemParams
 import com.github.jing332.tts.synthesizer.TtsConfiguration
 import com.github.jing332.tts_server_android.conf.SysTtsConfig
@@ -39,6 +41,29 @@ object AudioCacheFactory {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val warming = AtomicBoolean(false)
     private val cacheWorkMutex = Mutex()
+
+    // 开源阅读播放时会一句一句调用系统TTS。
+    // 后台整章缓存只能低频触发，避免每一句都重复启动朗读规则整章分析。
+    private const val WARM_REQUEST_INTERVAL_MS = 15 * 1000L
+
+    // 播放缓存清理策略：保留当前句前面多少句，避免回退/重播又重新合成
+    private const val PLAYBACK_CACHE_KEEP_BEHIND = 8
+
+    // J阅读需要读完整章后复制音频合成 MP3。
+    // 因此 reader_audio_cache 源缓存不能按播放进度只保留最近几句。
+    private const val KEEP_FULL_READER_AUDIO_CACHE_FOR_EXPORT = true
+
+    // 当前书音频缓存上限。想更省空间可改成 80L * 1024L * 1024L
+    private const val PLAYBACK_CACHE_BOOK_LIMIT_BYTES: Long = 256L * 1024L * 1024L
+
+    // 最终分工：
+    // J.TTS 播放链路不再读取旧音频缓存，避免误命中导致反复读同一句。
+    // J.TTS 仍然可以合成当前句并写入缓存。
+    // J阅读通过 EXPORT_READER_AUDIO_CACHE 复制缓存片段，自己拼接/加密整章音频。
+    private const val DISABLE_PLAYBACK_CACHE_READ_FOR_STABILITY = true
+
+    @Volatile
+    private var lastWarmRequestAt: Long = 0L
 
     @Volatile
     private var warmJob: Job? = null
@@ -112,94 +137,521 @@ object AudioCacheFactory {
         val configId: Long,
     )
 
-    fun getCachedAudio(context: Context, text: String): CachedAudio? {
-        val cleanText = text.trim()
-        if (cleanText.isBlank()) return null
 
-        val window = ReaderChapterBridgeClient.fetchChapterWindowJson()
-        if (!window.optBoolean("ok", false)) return null
+    private fun writeCurrentBookLightBridge(context: Context, bookName: String, chapter: JSONObject) {
+        val safeBookName = bookName.trim().ifBlank { "默认" }
 
-        val bookKey = window.optString("bookUrl", window.optString("bookName", "")).md5()
-        val chapters = window.optJSONArray("chapters") ?: return null
-        val textHash = cleanText.md5()
-        val lookupTextHash = cleanText.lookupTextKey().md5()
-        val configFingerprint = currentConfigFingerprint()
+        // 角色管理插件已改为直接读取 J.阅读 current-chapter。
+        // APK 不再写 /storage/emulated/0/TTSvoices/role_manager_shared，避免 Android 13+ 公共目录 EPERM。
+        appendPreviewLog(
+            context = context,
+            source = "当前书桥接",
+            message = "已跳过APK公共目录写入｜书=$safeBookName｜章=${chapter.optInt("chapterIndex", -1)} ${chapter.optString("chapterTitle", "")}｜角色管理改为HTTP直读"
+        )
+    }
 
-        for (i in 0 until chapters.length()) {
-            val chapter = chapters.optJSONObject(i) ?: continue
-            val chapterKey = chapterKey(bookKey, chapter.optInt("chapterIndex", -1))
-            val manifest = readManifest(chapterDir(context, bookKey, chapterKey)) ?: continue
-            val items = manifest.optJSONArray("items") ?: continue
 
-            for (j in 0 until items.length()) {
-                val item = items.optJSONObject(j) ?: continue
-                val cachedLookupTextHash = item.optString("lookupTextHash", "").ifBlank {
-                    item.optString("text", "").lookupTextKey().md5()
-                }
-                if (item.optString("textHash") != textHash && cachedLookupTextHash != lookupTextHash) continue
-                if (item.optString("configFingerprint") != configFingerprint) continue
+    private fun fetchCurrentChapterJsonForAudioCache(context: Context, currentText: String? = null): JSONObject {
+        try {
+            val live = ReaderChapterBridgeClient.fetchCurrentChapterJson()
+            if (live.optBoolean("ok", false)) return live
+        } catch (_: Throwable) {
+        }
 
-                val file = File(item.optString("path", ""))
-                if (!file.exists() || file.length() <= 0) continue
-
-                return CachedAudio(
-                    sampleRate = item.optInt("sampleRate", 16000).coerceAtLeast(8000),
-                    bytes = file.readBytes(),
-                    chapterKey = chapterKey,
-                    index = item.optInt("index", -1),
-                    voice = item.optString("voice", "").ifBlank { item.optString("tag", "") },
-                )
+        val local = readLocalJReadChapterForAudioCache(context, currentText)
+        if (local != null) {
+            try {
+                local.put("ok", true)
+                if (!local.has("type")) local.put("type", "chapter_context")
+                if (!local.has("updatedAt")) local.put("updatedAt", System.currentTimeMillis())
+            } catch (_: Throwable) {
             }
+            return local
+        }
+
+        return JSONObject().put("ok", false)
+    }
+
+    private fun readNewestLocalJReadPointerForAudioCache(context: Context): JSONObject? {
+        try {
+            val root = context.getExternalFilesDir(null) ?: return null
+            val candidates = mutableListOf<File>()
+
+            candidates.add(File(root, "jread_current_pointer.json"))
+
+            val pluginRoot = File(root, "plugins")
+            pluginRoot.listFiles()?.forEach { dir ->
+                if (dir != null && dir.isDirectory) {
+                    candidates.add(File(dir, "jread_current_pointer.json"))
+                }
+            }
+
+            val files = candidates
+                .filter { it.exists() && it.isFile && it.length() > 0L }
+                .sortedByDescending { it.lastModified() }
+
+            for (file in files) {
+                try {
+                    val obj = JSONObject(file.readText(Charsets.UTF_8))
+                    if (obj.optString("type", "current_pointer") == "current_pointer") {
+                        return obj
+                    }
+                } catch (_: Throwable) {
+                }
+            }
+        } catch (_: Throwable) {
         }
 
         return null
     }
 
-    fun savePlaybackAudio(
-    context: Context,
-    text: String,
-    sampleRate: Int,
-    bytes: ByteArray,
-) {
-    if (text.isBlank() || bytes.isEmpty()) return
+    private fun readLocalJReadChapterForAudioCache(context: Context, currentText: String? = null): JSONObject? {
+        try {
+            val root = context.getExternalFilesDir(null) ?: return null
 
-    scope.launch {
-        runCatching {
-            val window = ReaderChapterBridgeClient.fetchChapterWindowJson()
-            if (!window.optBoolean("ok", false)) return@runCatching
+            val pointer = readNewestLocalJReadPointerForAudioCache(context)
+            val pointerSessionId = pointer?.optString("sessionId", "") ?: ""
+            val pointerContentHash = pointer?.optString("contentHash", "") ?: ""
+            val pointerChapterIndex = pointer?.optInt("chapterIndex", -999999) ?: -999999
 
-            val bookKey = window.optString("bookUrl", window.optString("bookName", "")).md5()
-            val chapter = locateChapterForText(window, text) ?: return@runCatching
-            val realBookName = resolveRoleBookName(window.optString("bookName", ""), chapter)
+            val cleanCurrentText = String(currentText?.toCharArray() ?: CharArray(0))
+                .replace(Regex("^\\[\\[(emo|emotion)[^\\]]*\\]\\]", RegexOption.IGNORE_CASE), "")
+                .trim()
+            val compactCurrentText = bridgeExportNormalizeForChapterMatch(cleanCurrentText)
 
-            // 实时播放保存缓存时，也顺手保证角色管理当前书名不是“默认”
-            ensureRoleManagerBookContext(context, realBookName)
+            val candidates = mutableListOf<File>()
+            candidates.add(File(root, "jread_current_chapter.json"))
 
-            val sentences = splitSentences(chapter.optString("text", ""))
-            val index = sentences.indexOfFirst { it.trim() == text.trim() }.takeIf { it >= 0 }
-                ?: nextIndexForPlayback(context, bookKey, chapter)
+            val pluginRoot = File(root, "plugins")
+            pluginRoot.listFiles()?.forEach { dir ->
+                if (dir != null && dir.isDirectory) {
+                    candidates.add(File(dir, "jread_current_chapter.json"))
+                }
+            }
 
-            saveItem(
-                context = context,
-                bookKey = bookKey,
-                bookName = realBookName,
-                chapter = chapter,
-                index = index,
-                text = text.trim(),
-                sampleRate = sampleRate,
-                bytes = bytes,
-                status = "partial"
+            data class ChapterCandidate(
+                val file: File,
+                val json: JSONObject,
+                val score: Int
             )
-        }.onFailure {
-            logger.warn(it) { "save playback cache failed" }
+
+            val valid = mutableListOf<ChapterCandidate>()
+
+            val files = candidates
+                .filter { it.exists() && it.isFile && it.length() > 0L }
+                .sortedByDescending { it.lastModified() }
+
+            for (file in files) {
+                try {
+                    val obj = JSONObject(file.readText(Charsets.UTF_8))
+
+                    val bookName = obj.optString(
+                        "bookName",
+                        obj.optString(
+                            "book",
+                            obj.optString(
+                                "bookTitle",
+                                obj.optString("title", "")
+                            )
+                        )
+                    ).trim()
+
+                    val chapterContent = obj.optString("chapterContent", "")
+                    if (bookName.isBlank() || chapterContent.isBlank()) continue
+
+                    var score = 0
+
+                    val chapterSessionId = obj.optString("sessionId", "")
+                    val chapterContentHash = obj.optString("contentHash", "")
+                    val chapterIndex = obj.optInt("chapterIndex", -999999)
+
+                    if (pointerSessionId.isNotBlank() && chapterSessionId == pointerSessionId) score += 1000
+                    if (pointerContentHash.isNotBlank() && chapterContentHash == pointerContentHash) score += 1000
+                    if (pointerChapterIndex >= 0 && chapterIndex == pointerChapterIndex) score += 300
+
+                    var textMatched = false
+                    if (cleanCurrentText.isNotBlank()) {
+                        if (chapterContent.contains(cleanCurrentText)) {
+                            score += 3000
+                            textMatched = true
+                        } else if (compactCurrentText.isNotBlank()) {
+                            val compactChapter = bridgeExportNormalizeForChapterMatch(chapterContent)
+                            if (compactChapter.contains(compactCurrentText)) {
+                                score += 2000
+                                textMatched = true
+                            }
+                        }
+                    }
+
+                    // 保存音频时，当前 text 能在章节中找到，优先认为这是当前章。
+                    // pointer 可能因为 read-ahead / 异步广播滞后而暂时不同步，不能因此拒绝保存源缓存。
+                    if (textMatched || (pointerSessionId.isBlank() && pointerContentHash.isBlank() && pointerChapterIndex < 0) || score > 0) {
+                        valid.add(ChapterCandidate(file, obj, score))
+                    }
+                } catch (_: Throwable) {
+                }
+            }
+
+            val best = valid
+                .sortedWith(
+                    compareByDescending<ChapterCandidate> { it.score }
+                        .thenByDescending { it.file.lastModified() }
+                )
+                .firstOrNull()
+
+            return best?.json
+        } catch (_: Throwable) {
+        }
+
+        return null
+    }
+
+
+
+
+    fun getCachedAudio(context: Context, text: String): CachedAudio? {
+        val cleanText = text.trim()
+        if (cleanText.isBlank()) return null
+
+        if (DISABLE_PLAYBACK_CACHE_READ_FOR_STABILITY) {
+            return null
+        }
+
+        // 逐句缓存按章节归档：只读取当前章元信息，不使用整章窗口
+        val current = fetchCurrentChapterJsonForAudioCache(context)
+        if (!current.optBoolean("ok", false)) return null
+
+        val bookName = current.optString("bookName", "").trim().ifBlank { "默认" }
+        writeCurrentBookLightBridge(context, bookName, current)
+
+        val bookKey = current.optString("bookUrl", bookName).md5()
+        val chapterKey = chapterKey(bookKey, current.optInt("chapterIndex", -1))
+        val manifest = readManifest(chapterDir(context, bookKey, chapterKey)) ?: return null
+        val items = manifest.optJSONArray("items") ?: return null
+
+        val textHash = cleanText.md5()
+        val lookupTextHash = cleanText.lookupTextKey().md5()
+        val configFingerprint = currentConfigFingerprint()
+        val currentPointer = readCurrentPointerForAudioCache(context, cleanText)
+
+        for (j in 0 until items.length()) {
+            val item = items.optJSONObject(j) ?: continue
+            val cachedLookupTextHash = item.optString("lookupTextHash", "").ifBlank {
+                item.optString("text", "").lookupTextKey().md5()
+            }
+
+            val pointerMatched = isPointerMatchedForAudioCache(item, currentPointer)
+            val textMatched = item.optString("textHash") == textHash || cachedLookupTextHash == lookupTextHash
+
+            if (!pointerMatched && !textMatched) continue
+            if (item.optString("configFingerprint") != configFingerprint) continue
+
+            val file = File(item.optString("path", ""))
+            if (!file.exists() || file.length() <= 0) continue
+
+            val cachedIndex = item.optInt("index", -1)
+
+                trimPlayedAudioBefore(context, bookKey, chapterKey, cachedIndex)
+                trimCurrentBookAudioCache(context, bookKey, chapterKey)
+
+                return CachedAudio(
+                sampleRate = item.optInt("sampleRate", 16000).coerceAtLeast(8000),
+                bytes = file.readBytes(),
+                chapterKey = chapterKey,
+                index = cachedIndex,
+                voice = item.optString("actualVoice", "")
+                    .ifBlank { item.optString("voice", "") }
+                    .ifBlank { item.optString("tag", "") },
+            )
+        }
+
+        return null
+    }
+
+
+
+    private fun readCurrentPointerForAudioCache(context: Context, currentText: String? = null): JSONObject? {
+        return runCatching {
+            val root = context.getExternalFilesDir(null) ?: return null
+
+            var best: File? = null
+            root.walkTopDown()
+                .filter { it.isFile && it.name == "jread_current_pointer.json" }
+                .forEach { file ->
+                    if (best == null || file.lastModified() > (best?.lastModified() ?: 0L)) {
+                        best = file
+                    }
+                }
+
+            val f = best ?: return null
+            val obj = JSONObject(f.readText())
+
+            val ptrText = obj.optString("currentText", "").trim()
+            val cur = currentText.orEmpty().trim()
+
+            if (ptrText.isNotBlank() && cur.isNotBlank()) {
+                obj.put(
+                    "_pointerTextMatched",
+                    ptrText == cur || ptrText.lookupTextKey() == cur.lookupTextKey()
+                )
+            } else {
+                obj.put("_pointerTextMatched", false)
+            }
+
+            obj
+        }.getOrNull()
+    }
+
+    private fun isPointerMatchedForAudioCache(item: JSONObject, pointer: JSONObject?): Boolean {
+        if (pointer == null) return false
+
+        val start = pointer.optInt("startOffset", -1)
+        val end = pointer.optInt("endOffset", -1)
+        if (start < 0 || end < start) return false
+
+        val itemStart = item.optInt("startOffset", -1)
+        val itemEnd = item.optInt("endOffset", -1)
+        if (itemStart != start || itemEnd != end) return false
+
+        val pContentHash = pointer.optString("contentHash", "")
+        val iContentHash = item.optString("contentHash", "")
+        if (pContentHash.isNotBlank() && iContentHash.isNotBlank() && pContentHash != iContentHash) {
+            return false
+        }
+
+        val pSessionId = pointer.optString("sessionId", "")
+        val iSessionId = item.optString("sessionId", "")
+        if (pSessionId.isNotBlank() && iSessionId.isNotBlank() && pSessionId != iSessionId) {
+            return false
+        }
+
+        val pChapterIndex = pointer.optInt("chapterIndex", -1)
+        val iChapterIndex = item.optInt("chapterIndex", -1)
+        if (pChapterIndex >= 0 && iChapterIndex >= 0 && pChapterIndex != iChapterIndex) {
+            return false
+        }
+
+        return true
+    }
+
+    private fun putPointerFieldsForAudioCache(context: Context, currentText: String, item: JSONObject) {
+        val pointer = readCurrentPointerForAudioCache(context, currentText) ?: return
+
+        val start = pointer.optInt("startOffset", -1)
+        val end = pointer.optInt("endOffset", -1)
+
+        if (start >= 0) item.put("startOffset", start)
+        if (end >= 0) item.put("endOffset", end)
+
+        val sessionId = pointer.optString("sessionId", "")
+        if (sessionId.isNotBlank()) item.put("sessionId", sessionId)
+
+        val contentHash = pointer.optString("contentHash", "")
+        if (contentHash.isNotBlank()) item.put("contentHash", contentHash)
+
+        val chapterIndex = pointer.optInt("chapterIndex", -1)
+        if (chapterIndex >= 0) item.put("chapterIndex", chapterIndex)
+
+        val pointerText = pointer.optString("currentText", "")
+        if (pointerText.isNotBlank()) item.put("pointerText", pointerText)
+
+        item.put("pointerUpdatedAt", pointer.optLong("updatedAt", System.currentTimeMillis()))
+        item.put("pointerTextMatched", pointer.optBoolean("_pointerTextMatched", false))
+    }
+
+
+    private fun isAudioCacheFile(file: File): Boolean {
+        val name = file.name.lowercase(Locale.ROOT)
+        return name.endsWith(".pcm") || name.endsWith(".mp3") || name.endsWith(".wav")
+    }
+
+    private fun trimPlayedAudioBefore(
+        context: Context,
+        bookKey: String,
+        chapterKey: String,
+        currentIndex: Int,
+    ) {
+        
+        if (KEEP_FULL_READER_AUDIO_CACHE_FOR_EXPORT) return
+if (currentIndex < 0) return
+
+        val deleteBefore = currentIndex - PLAYBACK_CACHE_KEEP_BEHIND
+        if (deleteBefore <= 0) return
+
+        val dir = chapterDir(context, bookKey, chapterKey)
+        val manifest = readManifest(dir) ?: return
+        val items = manifest.optJSONArray("items") ?: return
+
+        var deletedCount = 0
+        var deletedBytes = 0L
+        for (i in 0 until items.length()) {
+            val item = items.optJSONObject(i) ?: continue
+val index = item.optInt("index", -1)
+
+            if (index >= 0 && index < deleteBefore) {
+                val path = item.optString("path", "")
+                if (path.isBlank()) continue
+
+                val file = File(path)
+                if (file.exists() && file.isFile && isAudioCacheFile(file)) {
+                    val len = file.length()
+                    if (file.delete()) {
+                        deletedCount++
+                        deletedBytes += len
+                    }
+                }
+            }
+        }
+
+        if (deletedCount > 0) {
+            appendPreviewLog(
+                context = context,
+                source = "播放缓存清理",
+                message = "已清理前文缓存｜章=$chapterKey｜当前句=$currentIndex｜删除=$deletedCount 个｜释放=${formatAudioCacheSize(deletedBytes)}"
+            )
         }
     }
-}
+
+    private fun trimCurrentBookAudioCache(
+        context: Context,
+        bookKey: String,
+        chapterKey: String,
+        maxBytes: Long = PLAYBACK_CACHE_BOOK_LIMIT_BYTES,
+    ) {
+        
+        if (KEEP_FULL_READER_AUDIO_CACHE_FOR_EXPORT) return
+val bookDir = chapterDir(context, bookKey, chapterKey).parentFile ?: return
+        if (!bookDir.exists()) return
+
+        val files = bookDir.walkTopDown()
+            .filter { it.isFile && isAudioCacheFile(it) }
+            .toList()
+
+        var totalBytes = 0L
+        for (file in files) {
+            totalBytes += file.length()
+        }
+
+        if (totalBytes <= maxBytes) return
+
+        val sortedFiles = files.sortedBy { it.lastModified() }
+
+        var deletedCount = 0
+        var deletedBytes = 0L
+
+        for (file in sortedFiles) {
+            if (totalBytes <= maxBytes) break
+
+            val len = file.length()
+            if (file.delete()) {
+                totalBytes -= len
+                deletedBytes += len
+                deletedCount++
+            }
+        }
+
+        if (deletedCount > 0) {
+            appendPreviewLog(
+                context = context,
+                source = "播放缓存清理",
+                message = "当前书缓存超限｜上限=${formatAudioCacheSize(maxBytes)}｜删除=$deletedCount 个｜释放=${formatAudioCacheSize(deletedBytes)}"
+            )
+        }
+    }
+
+
+    fun savePlaybackAudio(
+        context: Context,
+        text: String,
+        sampleRate: Int,
+        bytes: ByteArray,
+        request: RequestPayload? = null,
+    ) {
+        if (text.isBlank() || bytes.isEmpty()) {
+            appendPreviewLog(
+                context = context,
+                source = "章节归档",
+                message = "跳过｜textBlank=${text.isBlank()}｜bytes=${bytes.size}"
+            )
+            return
+        }
+
+        scope.launch {
+            runCatching {
+                appendPreviewLog(
+                    context = context,
+                    source = "章节归档",
+                    message = "开始｜text=${text.take(40)}｜bytes=${bytes.size}"
+                )
+
+                val current = fetchCurrentChapterJsonForAudioCache(context, text)
+                if (!current.optBoolean("ok", false)) {
+                    appendPreviewLog(
+                        context = context,
+                        source = "章节归档",
+                        message = "当前章元信息失败｜type=${current.optString("errorType", "")}｜error=${current.optString("error", "")}"
+                    )
+                    return@runCatching
+                }
+
+                val bookName = current.optString("bookName", "").trim().ifBlank { "默认" }
+                writeCurrentBookLightBridge(context, bookName, current)
+
+                val bookKey = current.optString("bookUrl", bookName).md5()
+                val chapter = current
+                val chapterTitle = chapter.optString("chapterTitle", "")
+                val chapterIndex = chapter.optInt("chapterIndex", -1)
+
+                val sentences = splitSentences(chapter.optString("text", ""))
+                val index = sentences.indexOfFirst { it.trim() == text.trim() }.takeIf { it >= 0 }
+                    ?: nextIndexForPlayback(context, bookKey, chapter)
+
+                saveItem(
+                    context = context,
+                    bookKey = bookKey,
+                    bookName = bookName,
+                    chapter = chapter,
+                    index = index,
+                    text = text.trim(),
+                    sampleRate = sampleRate,
+                    bytes = bytes,
+                    requestPayload = request,
+                    status = "partial"
+                )
+
+                val chapterKeyForTrim = chapterKey(bookKey, chapterIndex)
+                trimPlayedAudioBefore(context, bookKey, chapterKeyForTrim, index)
+                trimCurrentBookAudioCache(context, bookKey, chapterKeyForTrim)
+
+                appendPreviewLog(
+                    context = context,
+                    source = "章节归档",
+                    message = "写入成功｜书=$bookName｜章=$chapterIndex $chapterTitle｜句=$index｜text=${text.take(40)}"
+                )
+            }.onFailure {
+                appendPreviewLog(
+                    context = context,
+                    source = "章节归档",
+                    message = "写入失败｜${it.javaClass.simpleName}｜${it.message}"
+                )
+                logger.warn(it) { "save playback chapter bucket failed" }
+            }
+        }
+    }
 
 
 
     fun warmCurrentWindow(context: Context, liveManager: MixSynthesizer?) {
         if (liveManager == null) return
+
+        // 正在跑整章缓存时，后续句子只查缓存，不重复启动整章分析。
+        if (warming.get()) return
+
+        // 同一轮播放中限制触发频率：第一次触发后，两分钟内不再重复触发。
+        val now = System.currentTimeMillis()
+        if (now - lastWarmRequestAt < WARM_REQUEST_INTERVAL_MS) return
+        lastWarmRequestAt = now
+
         if (!warming.compareAndSet(false, true)) return
 
         warmJob = scope.launch {
@@ -207,6 +659,11 @@ object AudioCacheFactory {
                 cacheWorkMutex.withLock {
                     val manager = getBackgroundManager(context, liveManager)
                     val window = ReaderChapterBridgeClient.fetchChapterWindowJson()
+                    appendPreviewLog(
+                        context = context,
+                        source = "缓存队列",
+                        message = "窗口原始返回｜ok=${window.optBoolean("ok", false)}｜bookName=${window.optString("bookName", "")}｜bookUrl=${window.optString("bookUrl", "")}｜chapter=${window.optString("chapterTitle", "")}｜chapters=${window.optJSONArray("chapters")?.length() ?: 0}"
+                    )
                     if (!window.optBoolean("ok", false)) {
                         appendPreviewLog(
                             context = context,
@@ -243,7 +700,7 @@ object AudioCacheFactory {
                             manager = manager,
                             bookKey = bookKey,
                             bookName = bookName,
-                            chapter = chapter
+                            chapter = chapterWithNextChapters(chapter, chapters, i)
                         )
 
                         val status = readManifest(
@@ -300,6 +757,25 @@ object AudioCacheFactory {
             .orEmpty()
     }
 
+
+        fun listCurrentReaderPreview(context: Context): List<PreviewBook> {
+        return runCatching {
+            val window = ReaderChapterBridgeClient.fetchChapterWindowJson()
+            if (!window.optBoolean("ok", false)) {
+                return emptyList()
+            }
+
+            val currentBookName = window.optString("bookName", "")
+            val currentBookKey = window
+                .optString("bookUrl", currentBookName)
+                .md5()
+
+            listPreview(context).filter { it.bookKey == currentBookKey }
+        }.onFailure {
+            logger.warn(it) { "list current reader preview failed" }
+        }.getOrDefault(emptyList())
+    }
+
     fun clearChapter(context: Context, bookKey: String, chapterKey: String): Boolean {
         return chapterDir(context, bookKey, chapterKey).deleteRecursively()
     }
@@ -310,9 +786,6 @@ object AudioCacheFactory {
 
     fun appendPreviewLog(context: Context, source: String, message: String) {
         runCatching {
-            val file = previewLogFile(context)
-            if (!file.parentFile.exists()) file.parentFile.mkdirs()
-
             val time = SimpleDateFormat(
                 "yyyy-MM-dd HH:mm:ss.SSS",
                 Locale.getDefault()
@@ -324,8 +797,37 @@ object AudioCacheFactory {
                 .replace("\r", " ")
                 .trim()
 
-            file.appendText("$time | $safeSource | $safeMessage\n", Charsets.UTF_8)
+            val line = "$time | $safeSource | $safeMessage\n"
+
+            // 1. 原私有缓存日志：App 内部继续使用
+            val file = previewLogFile(context)
+            file.parentFile?.let { parent ->
+                if (!parent.exists()) parent.mkdirs()
+            }
+            file.appendText(line, Charsets.UTF_8)
             trimPreviewLogFile(file)
+
+              // 1.1 朗读规则日志同步到底部普通日志系统，供“日志 -> 朗读规则日志”筛选显示
+              if (
+                  safeSource.contains("朗读规则") ||
+                  safeSource.contains("朗读规则运行区")
+              ) {
+                  logger.info { "[SpeechRule] $safeSource | $safeMessage" }
+              }
+
+            // 2. 公开调试日志：给 Termux / 文件管理器直接查看
+            runCatching {
+                val publicFile = File(
+                    "/storage/emulated/0/Android/media/${context.packageName}/jtts-debug/cache_factory.log"
+                )
+                publicFile.parentFile?.let { parent ->
+                    if (!parent.exists()) parent.mkdirs()
+                }
+                publicFile.appendText(line, Charsets.UTF_8)
+                trimPreviewLogFile(publicFile)
+            }.onFailure {
+                logger.warn(it) { "append public cache factory log failed" }
+            }
         }.onFailure {
             logger.warn(it) { "append preview log failed" }
         }
@@ -418,6 +920,59 @@ object AudioCacheFactory {
         warming.set(false)
     }
 
+
+    private fun chapterWithNextChapters(
+        chapter: JSONObject,
+        chapters: JSONArray,
+        currentOffset: Int,
+    ): JSONObject {
+        val out = JSONObject(chapter.toString())
+        val nextArr = JSONArray()
+
+        for (j in currentOffset + 1 until chapters.length()) {
+            val next = chapters.optJSONObject(j) ?: continue
+            val text = next.optString("chapterText", next.optString("text", ""))
+            if (text.isBlank()) continue
+
+            nextArr.put(
+                JSONObject()
+                    .put("ok", next.optBoolean("ok", true))
+                    .put("bookName", next.optString("bookName", ""))
+                    .put("bookUrl", next.optString("bookUrl", ""))
+                    .put("chapterIndex", next.optInt("chapterIndex", -1))
+                    .put("chapterTitle", next.optString("chapterTitle", ""))
+                    .put("chapterText", text)
+                    .put("text", text)
+            )
+        }
+
+        out.put("nextChapters", nextArr)
+        out.put("nextChapterCount", nextArr.length())
+        return out
+    }
+
+    private fun joinNextChapterText(nextChapters: JSONArray): String {
+        val parts = mutableListOf<String>()
+
+        for (i in 0 until nextChapters.length()) {
+            val item = nextChapters.optJSONObject(i) ?: continue
+            val title = item.optString("chapterTitle", "")
+            val text = item.optString("chapterText", item.optString("text", ""))
+            if (text.isBlank()) continue
+
+            parts += buildString {
+                if (title.isNotBlank()) {
+                    append("【")
+                    append(title)
+                    append("】\n")
+                }
+                append(text)
+            }
+        }
+
+        return parts.joinToString("\n\n")
+    }
+
     private suspend fun cacheChapter(
     context: Context,
     manager: MixSynthesizer,
@@ -473,54 +1028,86 @@ object AudioCacheFactory {
 
     for (item in queue) {
         val latestManifest = readManifest(dir) ?: manifest
+
+        // 已存在且参数匹配的缓存，直接标记 ready。
+        // 这里不能用 actualItem，因为还没解析 config。
         if (hasItem(latestManifest, item, configFingerprint)) {
-            updateQueueItem(dir, item.index, "ready")
+            updateQueueItem(dir, item.index, "ready", queueItem = item)
             continue
         }
 
-        updateQueueItem(dir, item.index, "caching_audio")
         appendPreviewLog(
             context = context,
             source = "缓存队列",
-            message = "请求音频｜${chapter.optInt("chapterIndex", -1)}#${item.index.toString().padStart(2, '0')}｜${item.tag.ifBlank { "旁白" }}｜${item.voice.ifBlank { "默认音色" }}"
+            message = "请求音频｜${chapter.optInt("chapterIndex", -1)}#${item.index.toString().padStart(2, '0')}｜${item.raw.optString("roleName", item.tag).ifBlank { "旁白" }}｜${item.voice.ifBlank { "规则未给音色" }}"
         )
 
         val config = resolveTtsConfig(manager, item)
         if (config == null) {
-            updateQueueItem(dir, item.index, "failed", "No matching TTS config")
+            updateQueueItem(dir, item.index, "failed", "No matching TTS config", queueItem = item)
             appendPreviewLog(
                 context = context,
                 source = "缓存队列",
-                message = "请求失败｜${chapter.optInt("chapterIndex", -1)}#${item.index.toString().padStart(2, '0')}｜没有匹配音色"
+                message = "请求失败｜${chapter.optInt("chapterIndex", -1)}#${item.index.toString().padStart(2, '0')}｜没有匹配音色｜role=${item.raw.optString("roleName", item.tag)}｜voice=${item.voice}"
             )
             continue
         }
 
-        val audio = synthesizeQueueItemToPcm(manager, item, config)
+        // 关键：把实际使用的 TTS 配置绑定回 QueueItem。
+        // 从这里开始，缓存库、queue.json、manifest、实际请求都必须使用 actualItem。
+        val actualItem = bindActualRequestItem(item, config)
+
+        updateQueueItem(
+            dir = dir,
+            index = actualItem.index,
+            status = "caching_audio",
+            queueItem = actualItem
+        )
+
+        appendPreviewLog(
+            context = context,
+            source = "缓存队列",
+            message = "实际请求参数｜${chapter.optInt("chapterIndex", -1)}#${actualItem.index.toString().padStart(2, '0')}｜role=${actualItem.raw.optString("roleName", actualItem.tag)}｜tag=${actualItem.tag}｜voice=${actualItem.voice}"
+        )
+
+        val audio = synthesizeQueueItemToPcm(manager, actualItem, config)
         if (audio == null) {
-            updateQueueItem(dir, item.index, "failed", "TTS request failed")
+            updateQueueItem(
+                dir = dir,
+                index = actualItem.index,
+                status = "failed",
+                error = "TTS request failed",
+                queueItem = actualItem
+            )
             appendPreviewLog(
                 context = context,
                 source = "缓存队列",
-                message = "请求失败｜${chapter.optInt("chapterIndex", -1)}#${item.index.toString().padStart(2, '0')}｜TTS 请求失败"
+                message = "请求失败｜${chapter.optInt("chapterIndex", -1)}#${actualItem.index.toString().padStart(2, '0')}｜TTS 请求失败｜voice=${actualItem.voice}"
             )
             continue
         }
+
+        val finalItem = bindCacheSynthResult(actualItem, audio.request)
 
         saveItem(
             context = context,
             bookKey = bookKey,
             bookName = realBookName,
             chapter = chapter,
-            index = item.index,
-            text = item.text,
-            sampleRate = audio.first,
-            bytes = audio.second,
-            queueItem = item,
+            index = actualItem.index,
+            text = actualItem.text,
+            sampleRate = audio.sampleRate,
+            bytes = audio.bytes,
+            queueItem = finalItem,
             status = "caching_audio"
         )
 
-        updateQueueItem(dir, item.index, "ready")
+        updateQueueItem(
+            dir = dir,
+            index = finalItem.index,
+            status = "ready",
+            queueItem = finalItem
+        )
     }
 
     val latest = readManifest(dir) ?: manifest
@@ -578,11 +1165,16 @@ object AudioCacheFactory {
                 return@forEach
             }
 
-            val audio = synthesizeQueueItemToPcm(manager, item, config)
+            val actualItem = bindActualRequestItem(item, config)
+            updateQueueItem(dir, actualItem.index, "caching_audio", queueItem = actualItem)
+
+            val audio = synthesizeQueueItemToPcm(manager, actualItem, config)
             if (audio == null) {
                 updateQueueItem(dir, item.index, "failed", "TTS request failed")
                 return@forEach
             }
+
+            val finalItem = bindCacheSynthResult(actualItem, audio.request)
 
             val chapter = JSONObject()
                 .put("chapterIndex", manifest.optInt("chapterIndex", -1))
@@ -594,14 +1186,14 @@ object AudioCacheFactory {
                 bookKey = bookKey,
                 bookName = manifest.optString("bookName", ""),
                 chapter = chapter,
-                index = item.index,
-                text = item.text,
-                sampleRate = audio.first,
-                bytes = audio.second,
-                queueItem = item,
+                index = finalItem.index,
+                text = finalItem.text,
+                sampleRate = audio.sampleRate,
+                bytes = audio.bytes,
+                queueItem = finalItem,
                 status = "caching_audio"
             )
-            updateQueueItem(dir, item.index, "ready")
+            updateQueueItem(dir, finalItem.index, "ready", queueItem = finalItem)
         }
 
         val latest = readManifest(dir) ?: manifest
@@ -610,42 +1202,184 @@ object AudioCacheFactory {
         return true
     }
 
-    private suspend fun synthesizeQueueItemToPcm(
-        manager: MixSynthesizer,
-        item: QueueItem,
-        config: TtsConfiguration,
-    ): Pair<Int, ByteArray>? {
-        val out = ByteArrayOutputStream()
-        val sampleRate = config.audioFormat.sampleRate.coerceAtLeast(8000)
-        val request = RequestPayload(SystemParams(text = item.text), config)
+    
+private fun bindActualRequestItem(item: QueueItem, config: TtsConfiguration): QueueItem {
+    val actualVoice = item.voice.ifBlank { config.source.voice }
+    val actualRoleName = item.raw.optString("roleName", "").ifBlank { item.tag }
+    val actualTag = item.tag.ifBlank { actualRoleName }.ifBlank { actualVoice }
 
-        var ok = false
-        manager.ttsRequester.request(request.params, request.config)
-            .onSuccess { resp ->
-                val stream = resp.stream ?: return@onSuccess
-                manager.streamProcessor.processStream(
-                    ins = stream,
-                    request = request,
-                    targetSampleRate = sampleRate,
-                    callback = { pcm ->
-                        if (pcm.hasRemaining()) {
-                            val bytes = ByteArray(pcm.remaining())
-                            pcm.get(bytes)
-                            out.write(bytes)
-                        }
-                    }
-                ).onSuccess {
-                    ok = true
+    val raw = JSONObject(item.raw.toString())
+        .put("roleName", actualRoleName)
+        .put("tag", actualTag)
+        .put("voice", actualVoice)
+        .put("actualVoice", actualVoice)
+        .put("actualConfigId", config.speechInfo.configId)
+        .put("source", rawOptString(item.raw, "source", "speechRule"))
+
+    return item.copy(
+        tag = actualTag,
+        voice = actualVoice,
+        raw = raw
+    )
+}
+
+private fun rawOptString(raw: JSONObject, key: String, defaultValue: String): String {
+    return raw.optString(key, defaultValue).ifBlank { defaultValue }
+}
+
+
+private data class CacheSynthResult(
+    val sampleRate: Int,
+    val bytes: ByteArray,
+    val request: RequestPayload?,
+)
+
+private fun bindCacheSynthResult(item: QueueItem, request: RequestPayload?): QueueItem {
+    if (request == null) return item
+
+    val raw = JSONObject(item.raw.toString())
+    val speechInfo = request.config.speechInfo
+
+    val queueRole = raw.optString("displayRoleName", "")
+        .ifBlank { raw.optString("roleName", "") }
+        .ifBlank { raw.optString("characterName", "") }
+        .ifBlank { raw.optString("speakerName", "") }
+        .ifBlank { raw.optString("role", "") }
+        .ifBlank { raw.optString("tag", "") }
+        .ifBlank { item.tag }
+        .trim()
+
+    val requestTag = speechInfo.tag.trim()
+    val requestTagName = speechInfo.tagName.trim()
+    val requestVoice = runCatching {
+        request.config.source.voice.trim()
+    }.getOrDefault("")
+
+    val displayRole = when {
+        queueRole.isBlank() -> requestTagName.ifBlank { requestTag }.ifBlank { "旁白" }
+        queueRole == "narration" -> "旁白"
+        else -> queueRole
+    }
+
+    val displayVoice = requestVoice.ifBlank { item.voice }
+
+    val characterInfo = JSONObject()
+        .put("name", displayRole)
+        .put("roleName", displayRole)
+        .put("tag", displayRole)
+        .put("actualRequestTag", requestTag)
+        .put("actualRequestTagName", requestTagName)
+        .put("voice", displayVoice)
+        .put("actualVoice", displayVoice)
+
+    raw.put("displayRoleName", displayRole)
+    raw.put("roleName", displayRole)
+    raw.put("role", displayRole)
+    raw.put("tag", displayRole)
+    raw.put("voice", displayVoice)
+    raw.put("actualVoice", displayVoice)
+    raw.put("actualRequestTag", requestTag)
+    raw.put("actualRequestTagName", requestTagName)
+    raw.put("characterInfo", characterInfo)
+
+    return item.copy(
+        tag = displayRole,
+        voice = displayVoice,
+        raw = raw
+    )
+}
+
+private suspend fun synthesizeQueueItemToPcm(
+    manager: MixSynthesizer,
+    item: QueueItem,
+    config: TtsConfiguration,
+): CacheSynthResult? {
+    val out = ByteArrayOutputStream()
+    var synthesizedSampleRate = config.audioFormat.sampleRate.coerceAtLeast(8000)
+    var ok = false
+    var requests: List<RequestPayload> = emptyList()
+
+    appendPreviewLog(
+        context = manager.context.androidContext,
+        source = "缓存队列",
+        message = "完整规则合成路线｜index=${item.index}｜tag=${item.tag}｜voice=${item.voice}｜text=${item.text.take(40)}"
+    )
+
+    CacheRequestPayloadRecorder.begin()
+    try {
+        manager.synthesize(
+            params = SystemParams(text = item.text),
+            forceConfigId = null,
+            callback = object : com.github.jing332.tts.synthesizer.SynthesisCallback {
+                override fun onSynthesizeStart(sampleRate: Int) {
+                    if (sampleRate > 0) synthesizedSampleRate = sampleRate
+                }
+
+                override fun onSynthesizeAvailable(audio: ByteArray) {
+                    if (audio.isEmpty()) return
+                    out.write(audio)
                 }
             }
-            .onFailure {
-                logger.warn { "queue request failed: ${item.index}, ${it}" }
-            }
-
-        return out.toByteArray()
-            .takeIf { ok && it.isNotEmpty() }
-            ?.let { sampleRate to it }
+        ).onSuccess {
+            ok = true
+        }.onFailure { err ->
+            logger.warn("full synth queue request failed: ${item.index} | $err")
+            appendPreviewLog(
+                context = manager.context.androidContext,
+                source = "缓存队列",
+                message = "完整规则合成失败｜index=${item.index}｜$err"
+            )
+        }
+    } finally {
+        requests = CacheRequestPayloadRecorder.end()
     }
+
+    fun normalizeCacheRequestText(value: String): String {
+        return value
+            .replace(Regex("\\[\\[emo:[^\\]]+\\]\\]"), "")
+            .replace(Regex("\\s+"), "")
+            .trim()
+    }
+
+    val itemRequestKey = normalizeCacheRequestText(item.text)
+
+    val request = requests.lastOrNull {
+        normalizeCacheRequestText(it.text) == itemRequestKey
+    } ?: requests.lastOrNull {
+        val reqKey = normalizeCacheRequestText(it.text)
+        val itemShort = itemRequestKey.take(60)
+        val reqShort = reqKey.take(60)
+
+        itemShort.isNotBlank() &&
+            reqShort.isNotBlank() &&
+            (reqKey.contains(itemShort) || itemRequestKey.contains(reqShort))
+    }
+
+    if (request != null) {
+        appendPreviewLog(
+            context = manager.context.androidContext,
+            source = "缓存队列",
+            message = "完整规则实际请求匹配｜index=${item.index}｜tag=${request.config.speechInfo.tag}｜tagName=${request.config.speechInfo.tagName}｜voice=${request.config.source.voice}｜text=${request.text.take(40)}"
+        )
+    } else {
+        appendPreviewLog(
+            context = manager.context.androidContext,
+            source = "缓存队列",
+            message = "完整规则实际请求未匹配｜index=${item.index}｜routeTag=${item.tag}｜routeVoice=${item.voice}｜text=${item.text.take(40)}"
+        )
+    }
+
+    val bytes = out.toByteArray()
+    return if (ok && bytes.isNotEmpty()) {
+        CacheSynthResult(
+            sampleRate = synthesizedSampleRate,
+            bytes = bytes,
+            request = request
+        )
+    } else {
+        null
+    }
+}
 
     private suspend fun getBackgroundManager(
         context: Context,
@@ -687,53 +1421,214 @@ object AudioCacheFactory {
 ): List<QueueItem> {
     val rule = findActiveSpeechRule()
     val chapterText = chapter.optString("text", "")
-
-    // 关键修复：
-    // 不再优先调用 prepareChapterAudioQueueIfExists。
-    // 回到魔改前的旧规则 handleText 路线，让朗读规则自己处理：
-    // getBookshelf / cunfang.txt / liebiao.json / shuming.<书名>.json / characterRecords.json。
-    if (rule != null) {
-        val legacyQueue = prepareLegacyRuleQueue(
-            context = context,
-            manager = manager,
-            rule = rule,
-            chapterText = chapterText,
-            chapter = chapter
-        )
-
-        appendPreviewLog(
-            context = context,
-            source = "朗读规则运行区",
-            message = "${chapter.optInt("chapterIndex", -1)} ${chapter.optString("chapterTitle", "")}｜旧handleText路线｜生成 ${legacyQueue.size} 句"
-        )
-
-        if (legacyQueue.isNotEmpty()) return legacyQueue
-
-        appendPreviewLog(
-            context = context,
-            source = "朗读规则运行区",
-            message = "${chapter.optInt("chapterIndex", -1)} ${chapter.optString("chapterTitle", "")}｜旧handleText未生成有效队列，停止本章缓存。"
-        )
-        return emptyList()
+    val nextChapters = chapter.optJSONArray("nextChapters") ?: JSONArray()
+    val nextChapterText = joinNextChapterText(nextChapters)
+    val fullAnalyzeText = buildString {
+        append(chapterText)
+        if (nextChapterText.isNotBlank()) {
+            append("\n\n【后续章节】\n")
+            append(nextChapterText)
+        }
     }
 
-    return splitSentences(chapterText).mapIndexed { index, sentence ->
+    if (chapterText.isBlank()) return emptyList()
+
+    val rawQueue = if (rule != null) {
+        runCatching {
+            SpeechRuleEngine(context, rule).apply { eval() }
+                .prepareChapterAudioQueueIfExists(
+                    mapOf(
+                        "bookName" to bookName,
+                        "bookTitle" to bookName,
+                        "name" to bookName,
+                        "bookUrl" to chapter.optString("bookUrl", ""),
+                        "bookKey" to chapter.optString("bookUrl", ""),
+                        "chapterIndex" to chapter.optInt("chapterIndex", -1),
+                        "chapterTitle" to chapter.optString("chapterTitle", ""),
+                        "chapterName" to chapter.optString("chapterTitle", ""),
+                        "chapterText" to chapterText,
+                        "text" to chapterText,
+                            "nextChapters" to nextChapters,
+                            "nextChaptersJson" to nextChapters.toString(),
+                            "nextChapterText" to nextChapterText,
+                            "fullAnalyzeText" to fullAnalyzeText,
+                            "cacheMode" to true
+                    )
+                )
+        }.onFailure {
+            logger.warn(it) { "prepareChapterAudioQueue failed" }
+            appendPreviewLog(
+                context = context,
+                source = "朗读规则运行区",
+                message = "prepareChapterAudioQueue失败｜${chapter.optInt("chapterIndex", -1)} ${chapter.optString("chapterTitle", "")}｜${it.message.orEmpty()}"
+            )
+        }.getOrDefault(emptyList())
+    } else {
+        emptyList()
+    }
+
+      appendPreviewLog(
+        context = context,
+        source = "朗读规则运行区",
+        message = "朗读规则返回audioQueue｜${chapter.optInt("chapterIndex", -1)} ${chapter.optString("chapterTitle", "")}｜${rawQueue.size}句"
+    )
+
+    rawQueue.take(5).forEachIndexed { i, raw ->
+        appendPreviewLog(
+            context = context,
+            source = "朗读规则运行区",
+            message = "audioQueue样本#$i｜${raw.toString().take(500)}"
+        )
+    }
+
+    val queue = rawQueue.mapIndexedNotNull { fallbackIndex, raw ->
+        val text = raw.firstString("text", "content", "line", "sentence", "value", "台词", "内容")
+        if (text.isBlank()) return@mapIndexedNotNull null
+
+        val index = raw["index"]?.toString()?.toIntOrNull() ?: fallbackIndex
+          fun nestedFirstString(value: Any?, vararg keys: String): String {
+              if (value == null) return ""
+
+              fun fromJsonObject(obj: JSONObject): String {
+                  for (key in keys) {
+                      val v = obj.optString(key, "").trim()
+                      if (v.isNotBlank()) return v
+                  }
+                  return ""
+              }
+
+              return when (value) {
+                  is JSONObject -> fromJsonObject(value)
+                  is Map<*, *> -> {
+                      for (key in keys) {
+                          val v = value[key]?.toString()?.trim().orEmpty()
+                          if (v.isNotBlank()) return v
+                      }
+                      ""
+                  }
+                  else -> runCatching {
+                      val s = value.toString().trim()
+                      if (s.startsWith("{") && s.endsWith("}")) {
+                          fromJsonObject(JSONObject(s))
+                      } else {
+                          ""
+                      }
+                  }.getOrDefault("")
+              }
+          }
+
+          val characterInfo = raw["characterInfo"]
+              ?: raw["roleInfo"]
+              ?: raw["speakerInfo"]
+
+          val characterInfoRoleName = nestedFirstString(
+              characterInfo,
+              "name",
+              "roleName",
+              "role",
+              "characterName",
+              "speakerName",
+              "speaker",
+              "人物",
+              "角色",
+              "说话人"
+          )
+
+          val characterInfoVoice = nestedFirstString(
+              characterInfo,
+              "voice",
+              "voiceName",
+              "voiceId",
+              "speakerVoice",
+              "tts",
+              "ttsName",
+              "音色",
+              "声音"
+          )
+
+          val roleName = raw.firstString(
+              "roleName",
+              "role",
+              "characterName",
+              "character",
+              "speakerName",
+              "speaker",
+              "人物",
+              "角色",
+              "说话人"
+          ).ifBlank { characterInfoRoleName }
+
+          val voice = raw.firstString(
+              "voice",
+              "voiceName",
+              "voiceId",
+              "speakerVoice",
+              "tts",
+              "ttsName",
+              "音色",
+              "声音"
+          ).ifBlank { characterInfoVoice }
+
+          val actualVoice = raw.firstString(
+              "actualVoice",
+              "finalVoice",
+              "resolvedVoice",
+              "实际音色"
+          ).ifBlank { voice }
+
+          val rawTag = raw.firstString("tag", "speechTag", "标签")
+          val tag = roleName
+              .ifBlank { rawTag }
+              .ifBlank { voice }
+
+        val emotion = raw.firstString("emotion", "emo", "style", "mood", "情绪", "感情")
+        val speed = raw.firstFloat(1f, "speed", "rate", "语速")
+        val pitch = raw.firstFloat(1f, "pitch", "tone", "音高")
+        val volume = raw.firstFloat(1f, "volume", "vol", "音量")
+        val source = raw.firstString("source").ifBlank { "speechRule" }
+
+        val normalizedRaw = JSONObject(raw)
+            .put("index", index)
+            .put("text", text)
+            .put("roleName", roleName)
+            .put("tag", tag)
+            .put("voice", voice)
+            .put("actualVoice", actualVoice)
+            .put("characterInfoRoleName", characterInfoRoleName)
+            .put("characterInfoVoice", characterInfoVoice)
+            .put("rawTag", rawTag)
+            .put("emotion", emotion)
+            .put("speed", speed)
+            .put("pitch", pitch)
+            .put("volume", volume)
+            .put("source", source)
+            .put("status", raw.firstString("status", "state").ifBlank { "pending" })
+
         QueueItem(
             index = index,
-            text = sentence,
-            tag = "",
-            voice = "",
-            emotion = "",
-            speed = 1f,
-            pitch = 1f,
-            volume = 1f,
-            raw = JSONObject()
-                .put("index", index)
-                .put("text", sentence)
-                .put("status", "pending")
+            text = text,
+            tag = tag,
+            voice = actualVoice.ifBlank { voice },
+            emotion = emotion,
+            speed = speed,
+            pitch = pitch,
+            volume = volume,
+            raw = normalizedRaw
         )
-    }
+    }.sortedBy { it.index }
+
+    if (queue.isNotEmpty()) return queue
+
+    appendPreviewLog(
+        context = context,
+        source = "朗读规则运行区",
+        message = "朗读规则未生成有效audioQueue｜${chapter.optInt("chapterIndex", -1)} ${chapter.optString("chapterTitle", "")}｜已禁止旧handleText兜底，避免生成错误缓存"
+    )
+
+    return emptyList()
 }
+
+
 
 
 
@@ -941,52 +1836,97 @@ object AudioCacheFactory {
     }
 
     private fun saveItem(
-        context: Context,
-        bookKey: String,
-        bookName: String,
-        chapter: JSONObject,
-        index: Int,
-        text: String,
-        sampleRate: Int,
-        bytes: ByteArray,
-        queueItem: QueueItem? = null,
-        status: String,
-    ) {
-        val chapterKey = chapterKey(bookKey, chapter.optInt("chapterIndex", -1))
-        val dir = chapterDir(context, bookKey, chapterKey)
-        if (!dir.exists()) dir.mkdirs()
+          context: Context,
+          bookKey: String,
+          bookName: String,
+          chapter: JSONObject,
+          index: Int,
+          text: String,
+          sampleRate: Int,
+          bytes: ByteArray,
+          queueItem: QueueItem? = null,
+          requestPayload: RequestPayload? = null,
+          status: String,
+      ) {
+          val chapterKey = chapterKey(bookKey, chapter.optInt("chapterIndex", -1))
+          val dir = chapterDir(context, bookKey, chapterKey)
+          if (!dir.exists()) dir.mkdirs()
 
-        val configFingerprint = currentConfigFingerprint()
-        val audioFile = File(dir, "${index}_${text.md5()}_${configFingerprint.take(12)}.pcm")
-        audioFile.writeBytes(bytes)
+          val configFingerprint = currentConfigFingerprint()
+          val audioFile = File(dir, "${index}_${text.md5()}_${configFingerprint.take(12)}.pcm")
+          audioFile.writeBytes(bytes)
+          audioFile.setLastModified(System.currentTimeMillis())
+          // 手动清理模式：写入音频后不自动清理
 
-        val manifest = readManifest(dir) ?: newManifest(bookName, chapter, chapterKey)
-        val items = manifest.optJSONArray("items") ?: JSONArray().also { manifest.put("items", it) }
-        upsertItem(
-            items = items,
-            item = JSONObject()
-                .put("index", index)
-                .put("text", text)
-                .put("textHash", text.md5())
-                .put("lookupTextHash", text.lookupTextKey().md5())
-                .put("tag", queueItem?.tag.orEmpty())
-                .put("voice", queueItem?.voice.orEmpty())
-                .put("emotion", queueItem?.emotion.orEmpty())
-                .put("speed", queueItem?.speed ?: 1f)
-                .put("pitch", queueItem?.pitch ?: 1f)
-                .put("volume", queueItem?.volume ?: 1f)
-                .put("configFingerprint", configFingerprint)
-                .put("sampleRate", sampleRate.coerceAtLeast(8000))
-                .put("path", audioFile.absolutePath)
-                .put("status", "ready")
-                .put("updatedAt", System.currentTimeMillis())
-        )
-        manifest.put("bookName", bookName)
-        manifest.put("configFingerprint", configFingerprint)
-        manifest.put("status", status)
-        manifest.put("updatedAt", System.currentTimeMillis())
-        writeManifest(dir, manifest)
-    }
+          val requestTag = requestPayload?.config?.speechInfo?.tag?.trim().orEmpty()
+          val requestTagName = requestPayload?.config?.speechInfo?.tagName?.trim().orEmpty()
+          val requestVoice = runCatching {
+              requestPayload?.config?.source?.voice?.trim().orEmpty()
+          }.getOrDefault("")
+
+          val roleFromQueue = queueItem?.raw?.optString("roleName", "").orEmpty()
+          val displayRoleRaw = roleFromQueue
+              .ifBlank { queueItem?.raw?.optString("displayRoleName", "").orEmpty() }
+              .ifBlank { requestTagName }
+              .ifBlank { requestTag }
+              .ifBlank { queueItem?.tag.orEmpty() }
+              .ifBlank { "旁白" }
+
+          val displayRole = when (displayRoleRaw) {
+              "narration" -> "旁白"
+              else -> displayRoleRaw
+          }
+
+          val displayTag = queueItem?.tag.orEmpty()
+              .ifBlank { requestTag }
+              .ifBlank { displayRole }
+
+          val displayVoice = queueItem?.voice.orEmpty()
+              .ifBlank { requestVoice }
+
+          val displayEmotion = queueItem?.emotion.orEmpty()
+
+          val manifest = readManifest(dir) ?: newManifest(bookName, chapter, chapterKey)
+          val items = manifest.optJSONArray("items") ?: JSONArray().also { manifest.put("items", it) }
+
+          upsertItem(
+              items = items,
+              item = JSONObject()
+                  .put("index", index)
+                  .put("text", text)
+                  .put("textHash", text.md5())
+                  .put("lookupTextHash", text.lookupTextKey().md5())
+                  .also { putPointerFieldsForAudioCache(context, text, it) }
+                  .put("roleName", displayRole)
+                  .put("displayRoleName", displayRole)
+                  .put("tag", displayTag)
+                  .put("tagName", requestTagName)
+                  .put("actualRequestTag", requestTag)
+                  .put("actualRequestTagName", requestTagName)
+                  .put("voice", displayVoice)
+                  .put("actualVoice", displayVoice)
+                  .put("actualConfigId", queueItem?.raw?.optLong("actualConfigId", 0L) ?: 0L)
+                  .put("emotion", displayEmotion)
+                  .put("speed", queueItem?.speed ?: 1f)
+                  .put("pitch", queueItem?.pitch ?: 1f)
+                  .put("volume", queueItem?.volume ?: 1f)
+                  .put("source", queueItem?.raw?.optString("source", "speechRule").orEmpty().ifBlank { "speechRule" })
+                  .put("configFingerprint", configFingerprint)
+                  .put("sampleRate", sampleRate.coerceAtLeast(8000))
+                  .put("path", audioFile.absolutePath)
+                  .put("status", "ready")
+                  .put("updatedAt", System.currentTimeMillis())
+          )
+
+          val readyCount = items.length()
+          manifest.put("bookName", bookName)
+          manifest.put("configFingerprint", configFingerprint)
+          manifest.put("readyCount", readyCount)
+          manifest.put("failedCount", 0)
+          manifest.put("status", status)
+          manifest.put("updatedAt", System.currentTimeMillis())
+          writeManifest(dir, manifest)
+      }
 
     private fun writeQueue(dir: File, queue: List<QueueItem>) {
         val arr = JSONArray()
@@ -1033,23 +1973,47 @@ object AudioCacheFactory {
         }
     }
 
-    private fun updateQueueItem(dir: File, index: Int, status: String, error: String = "") {
-        val file = File(dir, "queue.json")
-        if (!file.exists()) return
+    private fun updateQueueItem(
+    dir: File,
+    index: Int,
+    status: String,
+    error: String = "",
+    queueItem: QueueItem? = null,
+) {
+    val file = File(dir, "queue.json")
+    if (!file.exists()) return
 
-        val arr = runCatching { JSONArray(file.readText(Charsets.UTF_8)) }.getOrNull() ?: return
-        for (i in 0 until arr.length()) {
-            val item = arr.optJSONObject(i) ?: continue
-            if (item.optInt("index", -1) != index) continue
-            item.put("status", status)
-            item.put("updatedAt", System.currentTimeMillis())
-            if (error.isNotBlank()) item.put("error", error)
-            else item.remove("error")
-            arr.put(i, item)
-            break
+    val arr = runCatching { JSONArray(file.readText(Charsets.UTF_8)) }.getOrNull() ?: return
+    for (i in 0 until arr.length()) {
+        val item = arr.optJSONObject(i) ?: continue
+        if (item.optInt("index", -1) != index) continue
+
+        if (queueItem != null) {
+            item.put("text", queueItem.text)
+            item.put("roleName", queueItem.raw.optString("roleName", ""))
+            item.put("tag", queueItem.tag)
+            item.put("voice", queueItem.voice)
+            item.put("emotion", queueItem.emotion)
+            item.put("speed", queueItem.speed)
+            item.put("pitch", queueItem.pitch)
+            item.put("volume", queueItem.volume)
+            item.put("source", queueItem.raw.optString("source", "speechRule"))
+            item.put("actualVoice", queueItem.raw.optString("actualVoice", queueItem.voice))
+            item.put("actualConfigId", queueItem.raw.optLong("actualConfigId", 0L))
         }
-        file.writeText(arr.toString(2), Charsets.UTF_8)
+
+        item.put("status", status)
+        item.put("updatedAt", System.currentTimeMillis())
+        if (error.isNotBlank()) item.put("error", error)
+        else item.remove("error")
+
+        arr.put(i, item)
+        break
     }
+    file.writeText(arr.toString(2), Charsets.UTF_8)
+}
+
+
 
     private fun upsertItem(items: JSONArray, item: JSONObject) {
         val index = item.optInt("index", -1)
@@ -1107,8 +2071,8 @@ object AudioCacheFactory {
     }
 
     private fun writeManifest(dir: File, manifest: JSONObject) {
-        if (!dir.exists()) dir.mkdirs()
-        File(dir, "manifest.json").writeText(manifest.toString(2), Charsets.UTF_8)
+        val manifestFile = File(dir, "manifest.json")
+        writeReaderAudioManifestDeduped(manifestFile, manifest)
     }
 
     private fun chapterDir(context: Context, bookKey: String, chapterKey: String): File {
@@ -1132,14 +2096,58 @@ private fun roleManagerDirs(context: Context): List<File> {
 
     
     private fun resolveRoleBookName(bookName: String, chapter: JSONObject): String {
-    return bookName
-        .trim()
-        .ifBlank { chapter.optString("bookName", "").trim() }
-        .ifBlank { chapter.optString("bookTitle", "").trim() }
-        .ifBlank { chapter.optString("name", "").trim() }
+    val directBook = bookName.trim()
+    val chapterBook = chapter.optString("bookName", "").trim()
+    val chapterTitleBook = chapter.optString("bookTitle", "").trim()
+
+    // 当前书唯一来源优先级：
+    // 1. 本次章节对象携带的 bookName/bookTitle
+    // 2. 当前窗口传入的 bookName
+    // 3. 默认
+    return chapterBook
+        .ifBlank { chapterTitleBook }
+        .ifBlank { directBook }
         .ifBlank { "默认" }
 }
 
+
+
+
+    private fun writeRoleManagerCurrentBookBridge(context: Context, bookName: String) {
+        // 回退逐句模式：TTS 端不再反向写角色管理当前书
+        return
+
+        val safeBookName = bookName.trim()
+        if (safeBookName.isBlank()) return
+
+        val meta = org.json.JSONObject()
+            .put("bookName", safeBookName)
+            .put("book", safeBookName)
+            .put("bookTitle", safeBookName)
+            .put("title", safeBookName)
+            .put("source", "AudioCacheFactory.roleManagerPreSwitch")
+            .put("updatedAt", System.currentTimeMillis())
+            .toString()
+
+        val dirs = mutableListOf<java.io.File>()
+        // 公开桥接目录：角色管理插件优先读取这里
+        dirs += java.io.File("/storage/emulated/0/TTSvoices/role_manager_shared")
+        dirs += java.io.File("/sdcard/TTSvoices/role_manager_shared")
+        dirs += context.filesDir
+        dirs += java.io.File(context.filesDir, "role_manager_shared")
+        context.getExternalFilesDir(null)?.let {
+            dirs += it
+            dirs += java.io.File(it, "role_manager_shared")
+        }
+
+        dirs.distinctBy { it.absolutePath }.forEach { dir ->
+            runCatching {
+                dir.mkdirs()
+                java.io.File(dir, "cunfang.txt").writeText(safeBookName)
+                java.io.File(dir, "cache_book_context_meta.json").writeText(meta)
+            }
+        }
+    }
 
 
     private fun safeRoleBookName(bookName: String): String {
@@ -1158,14 +2166,111 @@ private fun ensureRoleManagerBookContext(
     context: Context,
     bookName: String,
 ) {
-    // 关键修复：
-    // 不在 APK 层写 cunfang.txt / liebiao.json / characterRecords.json。
-    // 这些继续交给旧朗读规则 handleText + 角色管理插件处理，避免 APK 和 JS 两边抢写。
-    appendPreviewLog(
-        context = context,
-        source = "角色管理",
-        message = "跳过APK预切书｜交由朗读规则handleText维护书籍上下文｜book=$bookName"
-    )
+        // 回退逐句模式：不再由 APK/TTS 自动预切角色管理当前书
+        return
+
+    runCatching {
+        val safeBookName = safeRoleBookName(bookName)
+        val dirs = roleManagerDirs(context)
+
+        dirs.forEach { dir ->
+            if (!dir.exists()) dir.mkdirs()
+
+            val cunfangFile = File(dir, "cunfang.txt")
+            val characterFile = File(dir, "characterRecords.json")
+            val gengxinFile = File(dir, "gengxin.json")
+            val listFile = File(dir, "liebiao.json")
+
+            val oldBookName = runCatching {
+                if (cunfangFile.exists()) {
+                    cunfangFile.readText(Charsets.UTF_8).trim().ifBlank { "默认" }
+                } else {
+                    "默认"
+                }
+            }.getOrDefault("默认")
+
+            val currentRecords = readRoleRecords(characterFile)
+
+            if (oldBookName != safeBookName) {
+                // 保存旧书当前角色，避免切书时丢失
+                if (oldBookName.isNotBlank()) {
+                    File(dir, "shuming.$oldBookName.json")
+                        .writeText(currentRecords.toString(2), Charsets.UTF_8)
+                }
+
+                // 加载目标书角色；目标书不存在时创建空角色表
+                val targetBookFile = File(dir, "shuming.$safeBookName.json")
+                if (!targetBookFile.exists()) {
+                    targetBookFile.writeText("[]", Charsets.UTF_8)
+                }
+
+                val targetRecords = readRoleRecords(targetBookFile)
+                val targetText = targetRecords.toString(2)
+
+                characterFile.writeText(targetText, Charsets.UTF_8)
+                gengxinFile.writeText(targetText, Charsets.UTF_8)
+            } else {
+                // 同一本书，确保 shuming 文件存在
+                val targetBookFile = File(dir, "shuming.$safeBookName.json")
+                if (!targetBookFile.exists()) {
+                    targetBookFile.writeText(currentRecords.toString(2), Charsets.UTF_8)
+                }
+            }
+
+            // 当前书名
+            cunfangFile.writeText(safeBookName, Charsets.UTF_8)
+
+            // 书籍列表：当前书放第一位，避免角色管理插件默认停在“默认”
+            val names = linkedSetOf<String>()
+            names += safeBookName
+
+            runCatching {
+                if (listFile.exists()) {
+                    val arr = JSONArray(listFile.readText(Charsets.UTF_8))
+                    for (i in 0 until arr.length()) {
+                        val n = arr.optString(i, "").trim()
+                        if (n.isNotBlank()) names += n
+                    }
+                }
+            }
+
+            names += "默认"
+
+            val out = JSONArray()
+            names.forEach { out.put(it) }
+            listFile.writeText(out.toString(2), Charsets.UTF_8)
+
+            File(dir, "cache_book_context_meta.json").writeText(
+                JSONObject()
+                    .put("bookName", safeBookName)
+                    .put("oldBookName", oldBookName)
+                    .put("reason", "apk_pre_switch_book")
+                    .put("updatedAt", System.currentTimeMillis())
+                    .toString(2),
+                Charsets.UTF_8
+            )
+        }
+
+        // 暂停：safeBookName 可能来自旧窗口，不能反写当前书桥接
+        appendPreviewLog(
+            context = context,
+            source = "角色管理预切书",
+            message = "当前书桥接暂停写入=$safeBookName"
+        )
+
+        appendPreviewLog(
+            context = context,
+            source = "角色管理预切书",
+            message = "已切换角色管理当前书=$safeBookName｜目录数=${dirs.size}"
+        )
+    }.onFailure {
+        logger.warn(it) { "ensure role manager book context failed" }
+        appendPreviewLog(
+            context = context,
+            source = "角色管理预切书",
+            message = "切书失败：${it.message.orEmpty()}"
+        )
+    }
 }
 
 
@@ -1383,6 +2488,316 @@ private fun writeRoleTextToDirs(
         }
     }
 
+    /**
+     * 清理当前书当前章节的 PCM 音频缓存。
+     *
+     * 只删除 .pcm 音频文件，不删除 manifest.json / queue.json / 当前书信息。
+     * 后续开源阅读端朗读完成或整章音频合成完成后，可以调用这个函数。
+     */
+    fun clearCurrentChapterPcmCache(context: Context): Int {
+        return runCatching {
+            val current = fetchCurrentChapterJsonForAudioCache(context)
+            if (!current.optBoolean("ok", false)) return 0
+
+            val bookName = current.optString("bookName", "").trim().ifBlank { "默认" }
+            val bookKey = current.optString("bookUrl", bookName).md5()
+            val chapterKey = chapterKey(bookKey, current.optInt("chapterIndex", -1))
+            val dir = chapterDir(context, bookKey, chapterKey)
+
+            val deletedCount = clearPcmFilesOnly(dir)
+
+            appendPreviewLog(
+                context = context,
+                source = "PCM缓存清理",
+                message = "已清理当前章节PCM｜书=$bookName｜章=${current.optInt("chapterIndex", -1)} ${current.optString("chapterTitle", "")}｜删除=${deletedCount}个"
+            )
+
+            deletedCount
+        }.getOrElse {
+            logger.warn(it) { "clear current chapter pcm cache failed" }
+            0
+        }
+    }
+
+    /**
+     * 只删除目录下的 .pcm 文件，不动 json / meta / queue。
+     */
+    private fun clearPcmFilesOnly(dir: File): Int {
+        if (!dir.exists()) return 0
+
+        var count = 0
+        dir.walkTopDown()
+            .filter { it.isFile && it.extension.equals("pcm", ignoreCase = true) }
+            .forEach { file ->
+                if (file.delete()) count++
+            }
+
+        return count
+    }
+
+    /**
+     * 自动限额清理 PCM 音频缓存。
+     *
+     * 默认最多保留 80MB。
+     * 超过后删除最旧的 .pcm，清到 64MB 左右。
+     * 最多每 60 秒检查一次，避免频繁扫描导致卡顿。
+     */
+    private fun trimPcmAudioCacheIfNeeded(
+        context: Context,
+        maxBytes: Long = 80L * 1024L * 1024L,
+        minIntervalMs: Long = 60_000L
+    ) {
+        
+        if (KEEP_FULL_READER_AUDIO_CACHE_FOR_EXPORT) return
+runCatching {
+            val root = cacheRoot(context)
+            if (!root.exists()) return
+
+            val marker = File(root, ".last_pcm_trim")
+            val now = System.currentTimeMillis()
+
+            if (marker.exists() && now - marker.lastModified() < minIntervalMs) {
+                return
+            }
+
+            marker.parentFile?.let { parent ->
+                if (!parent.exists()) parent.mkdirs()
+            }
+            marker.writeText(now.toString(), Charsets.UTF_8)
+
+            val pcmFiles = root
+                .walkTopDown()
+                .filter { it.isFile && it.extension.equals("pcm", ignoreCase = true) }
+                .toList()
+
+            var totalBytes = pcmFiles.sumOf { it.length() }
+            if (totalBytes <= maxBytes) return
+
+            val targetBytes = (maxBytes * 0.8).toLong()
+            var deletedCount = 0
+
+            pcmFiles
+                .sortedBy { it.lastModified() }
+                .forEach { file ->
+                    if (totalBytes <= targetBytes) return@forEach
+
+                    val len = file.length()
+                    if (file.delete()) {
+                        totalBytes -= len
+                        deletedCount++
+                    }
+                }
+
+            if (deletedCount > 0) {
+                appendPreviewLog(
+                    context = context,
+                    source = "PCM缓存清理",
+                    message = "自动清理PCM缓存｜删除=${deletedCount}个｜剩余=${totalBytes / 1024 / 1024}MB｜上限=${maxBytes / 1024 / 1024}MB"
+                )
+            }
+        }.onFailure {
+            logger.warn(it) { "trim pcm audio cache failed" }
+        }
+    }
+
+    data class AudioCacheStat(
+        val pcmBytes: Long,
+        val pcmCount: Int,
+        val mp3Bytes: Long,
+        val mp3Count: Int
+    )
+
+    data class AudioChapterCacheInfo(
+        val bookKey: String,
+        val bookName: String,
+        val chapterKey: String,
+        val chapterIndex: Int,
+        val chapterTitle: String,
+        val pcmBytes: Long,
+        val pcmCount: Int,
+        val mp3Bytes: Long,
+        val mp3Count: Int
+    )
+
+    fun getAudioCacheStat(context: Context): AudioCacheStat {
+        return runCatching {
+            val root = cacheRoot(context)
+            if (!root.exists()) {
+                return AudioCacheStat(0L, 0, 0L, 0)
+            }
+
+            var pcmBytes = 0L
+            var pcmCount = 0
+            var mp3Bytes = 0L
+            var mp3Count = 0
+
+            root.walkTopDown()
+                .filter { it.isFile }
+                .forEach { file ->
+                    when (file.extension.lowercase()) {
+                        "pcm" -> {
+                            pcmBytes += file.length()
+                            pcmCount++
+                        }
+                        "mp3" -> {
+                            mp3Bytes += file.length()
+                            mp3Count++
+                        }
+                    }
+                }
+
+            AudioCacheStat(
+                pcmBytes = pcmBytes,
+                pcmCount = pcmCount,
+                mp3Bytes = mp3Bytes,
+                mp3Count = mp3Count
+            )
+        }.getOrDefault(AudioCacheStat(0L, 0, 0L, 0))
+    }
+
+    fun formatAudioCacheSize(bytes: Long): String {
+        if (bytes <= 0L) return "0 B"
+
+        val kb = bytes / 1024.0
+        val mb = kb / 1024.0
+        val gb = mb / 1024.0
+
+        return when {
+            gb >= 1.0 -> "%.2f GB".format(gb)
+            mb >= 1.0 -> "%.1f MB".format(mb)
+            kb >= 1.0 -> "%.1f KB".format(kb)
+            else -> "$bytes B"
+        }
+    }
+
+    fun listAudioChapterCaches(context: Context): List<AudioChapterCacheInfo> {
+        return runCatching {
+            val root = cacheRoot(context)
+            if (!root.exists()) return emptyList()
+
+            val result = mutableListOf<AudioChapterCacheInfo>()
+
+            root.listFiles()
+                ?.filter { it.isDirectory }
+                ?.forEach { bookDir ->
+                    bookDir.listFiles()
+                        ?.filter { it.isDirectory }
+                        ?.forEach { chapterDir ->
+                            val audioFiles = chapterDir
+                                .walkTopDown()
+                                .filter { it.isFile && (it.extension.equals("pcm", true) || it.extension.equals("mp3", true)) }
+                                .toList()
+
+                            if (audioFiles.isEmpty()) return@forEach
+
+                            val manifest = readManifest(chapterDir)
+
+                            val pcmFiles = audioFiles.filter { it.extension.equals("pcm", true) }
+                            val mp3Files = audioFiles.filter { it.extension.equals("mp3", true) }
+
+                            result += AudioChapterCacheInfo(
+                                bookKey = bookDir.name,
+                                bookName = manifest?.optString("bookName", "").orEmpty().ifBlank { bookDir.name },
+                                chapterKey = chapterDir.name,
+                                chapterIndex = manifest?.optInt("chapterIndex", -1) ?: -1,
+                                chapterTitle = manifest?.optString("chapterTitle", "").orEmpty(),
+                                pcmBytes = pcmFiles.sumOf { it.length() },
+                                pcmCount = pcmFiles.size,
+                                mp3Bytes = mp3Files.sumOf { it.length() },
+                                mp3Count = mp3Files.size
+                            )
+                        }
+                }
+
+            result.sortedWith(
+                compareBy<AudioChapterCacheInfo> { it.bookName }
+                    .thenBy { it.chapterIndex }
+                    .thenBy { it.chapterTitle }
+            )
+        }.getOrDefault(emptyList())
+    }
+
+    private fun clearAudioFilesOnly(dir: File, extensions: Set<String>): Int {
+        if (!dir.exists()) return 0
+
+        var count = 0
+        dir.walkTopDown()
+            .filter { file ->
+                file.isFile && extensions.any { ext -> file.extension.equals(ext, ignoreCase = true) }
+            }
+            .forEach { file ->
+                if (file.delete()) count++
+            }
+
+        return count
+    }
+
+    fun clearAudioCacheByExtensions(context: Context, extensions: Set<String>): Int {
+        return runCatching {
+            val deletedCount = clearAudioFilesOnly(cacheRoot(context), extensions)
+
+            appendPreviewLog(
+                context = context,
+                source = "音频缓存清理",
+                message = "一键清理音频缓存｜类型=${extensions.joinToString(",")}｜删除=${deletedCount}个"
+            )
+
+            deletedCount
+        }.getOrElse {
+            logger.warn(it) { "clear audio cache failed" }
+            0
+        }
+    }
+
+    fun clearAudioBookCacheByExtensions(context: Context, bookKey: String, extensions: Set<String>): Int {
+        return runCatching {
+            val dir = File(cacheRoot(context), bookKey)
+            val deletedCount = clearAudioFilesOnly(dir, extensions)
+
+            appendPreviewLog(
+                context = context,
+                source = "音频缓存清理",
+                message = "按书清理音频缓存｜bookKey=$bookKey｜类型=${extensions.joinToString(",")}｜删除=${deletedCount}个"
+            )
+
+            deletedCount
+        }.getOrElse {
+            logger.warn(it) { "clear book audio cache failed" }
+            0
+        }
+    }
+
+    fun clearAudioChapterCacheByExtensions(
+        context: Context,
+        bookKey: String,
+        chapterKey: String,
+        extensions: Set<String>
+    ): Int {
+        return runCatching {
+            val dir = chapterDir(context, bookKey, chapterKey)
+            val deletedCount = clearAudioFilesOnly(dir, extensions)
+
+            appendPreviewLog(
+                context = context,
+                source = "音频缓存清理",
+                message = "按章节清理音频缓存｜bookKey=$bookKey｜chapterKey=$chapterKey｜类型=${extensions.joinToString(",")}｜删除=${deletedCount}个"
+            )
+
+            deletedCount
+        }.getOrElse {
+            logger.warn(it) { "clear chapter audio cache failed" }
+            0
+        }
+    }
+
+    fun clearAllPcmAudioCache(context: Context): Int {
+        return clearAudioCacheByExtensions(context, setOf("pcm"))
+    }
+
+    fun clearAllMp3AudioCache(context: Context): Int {
+        return clearAudioCacheByExtensions(context, setOf("mp3"))
+    }
+
     private fun cacheRoot(context: Context): File {
         return context.getExternalFilesDir("reader_audio_cache")
             ?: File(context.filesDir, "reader_audio_cache")
@@ -1475,6 +2890,26 @@ private fun writeRoleTextToDirs(
         val manifest = readManifest(dir)
         val queue = readQueue(dir)
         if (manifest == null && queue.isEmpty()) return null
+        fun displayRole(rawRole: String, fallback: String): String {
+            val value = rawRole.ifBlank { fallback }.trim()
+            return when {
+                value.equals("duihua", ignoreCase = true) -> "对话角色（完整规则）"
+                value.equals("narration", ignoreCase = true) -> "旁白"
+                value.isBlank() -> "旁白"
+                else -> value
+            }
+        }
+
+        fun displayVoice(rawVoice: String): String {
+            val value = rawVoice.trim()
+            return when {
+                value.isBlank() -> "完整规则合成"
+                value.equals("tts.default.placeholder", ignoreCase = true) -> "完整规则合成"
+                value.equals("默认音色", ignoreCase = true) -> "完整规则合成"
+                else -> value
+            }
+        }
+
 
         val manifestItems = manifest?.optJSONArray("items")
         val readyItems = mutableListOf<JSONObject>()
@@ -1495,8 +2930,18 @@ private fun writeRoleTextToDirs(
                 PreviewItem(
                     index = item.index,
                     text = item.text,
-                    tag = item.tag,
-                    voice = item.voice,
+                    tag = displayRole(
+                        cached?.optString("roleName", "").orEmpty()
+                            .ifBlank { item.raw.optString("roleName", "") },
+                        cached?.optString("tag", "").orEmpty()
+                            .ifBlank { item.tag }
+                    ),
+                    voice = displayVoice(
+                        cached?.optString("actualVoice", "").orEmpty()
+                            .ifBlank { item.raw.optString("actualVoice", "") }
+                            .ifBlank { cached?.optString("voice", "").orEmpty() }
+                            .ifBlank { item.voice }
+                    ),
                     status = if (cached != null) "ready" else item.raw.optString("status", "pending"),
                     emotion = item.emotion,
                     speed = item.speed,
@@ -1510,8 +2955,14 @@ private fun writeRoleTextToDirs(
                 PreviewItem(
                     index = item.optInt("index", 0),
                     text = item.optString("text", ""),
-                    tag = item.optString("tag", ""),
-                    voice = item.optString("voice", ""),
+                    tag = displayRole(
+                        item.optString("roleName", ""),
+                        item.optString("tag", "")
+                    ),
+                    voice = displayVoice(
+                        item.optString("actualVoice", "")
+                            .ifBlank { item.optString("voice", "") }
+                    ),
                     status = item.optString("status", "ready"),
                     emotion = item.optString("emotion", ""),
                     speed = item.optDouble("speed", 1.0).toFloat(),
@@ -1573,4 +3024,764 @@ private fun writeRoleTextToDirs(
             optDouble("pitch", 1.0).toFloat() == item.pitch &&
             optDouble("volume", 1.0).toFloat() == item.volume
     }
+
+    /**
+     * Bridge 导出：把 AudioCacheFactory 现有的播放缓存片段复制到
+     * externalFiles/reader_audio_cache/exports/<requestId>/ 下，
+     * 并返回带 content:// audioUri 的 manifest。
+     *
+     * 注意：这里不合成音频，只导出现有缓存。
+     */
+
+    private fun bridgeExportAudioMimeType(file: File, item: JSONObject): String {
+        val name = file.name.lowercase(Locale.ROOT)
+        val extMime = when {
+            name.endsWith(".pcm") -> "audio/pcm"
+            name.endsWith(".wav") -> "audio/wav"
+            name.endsWith(".mp3") -> "audio/mpeg"
+            name.endsWith(".m4a") -> "audio/mp4"
+            name.endsWith(".aac") -> "audio/aac"
+            else -> ""
+        }
+        if (extMime.isNotBlank()) return extMime
+
+        val itemMime = item.optString("audioMimeType", "")
+            .ifBlank { item.optString("mimeType", "") }
+            .ifBlank { item.optString("contentType", "") }
+
+        return itemMime.ifBlank { "application/octet-stream" }
+    }
+
+    private fun bridgeExportSampleRate(item: JSONObject): Int {
+        val sr = item.optInt(
+            "sampleRate",
+            item.optInt("sample_rate", item.optInt("samplingRate", 16000))
+        )
+        return sr.coerceAtLeast(8000)
+    }
+
+    private fun bridgeExportChannelCount(item: JSONObject): Int {
+        val ch = item.optInt(
+            "channels",
+            item.optInt("channelCount", item.optInt("channel_count", 1))
+        )
+        return ch.coerceAtLeast(1)
+    }
+
+    private fun bridgeExportBitsPerSample(item: JSONObject): Int {
+        val bits = item.optInt(
+            "bitsPerSample",
+            item.optInt("bits_per_sample", item.optInt("bitDepth", 16))
+        )
+        return bits.coerceAtLeast(8)
+    }
+
+
+
+    private fun bridgeExportIsRawPcm(src: File, item: JSONObject): Boolean {
+        val name = src.name.lowercase(Locale.ROOT)
+        val mime = bridgeExportAudioMimeType(src, item)
+        return name.endsWith(".pcm") || mime.equals("audio/pcm", true)
+    }
+
+    private fun bridgeExportTargetExtension(src: File, item: JSONObject): String {
+        val name = src.name.lowercase(Locale.ROOT)
+        return when {
+            bridgeExportIsRawPcm(src, item) -> "pcm"
+            name.endsWith(".wav") -> "wav"
+            name.endsWith(".mp3") -> "mp3"
+            name.endsWith(".m4a") -> "m4a"
+            name.endsWith(".aac") -> "aac"
+            bridgeExportAudioMimeType(src, item).contains("wav", true) -> "wav"
+            bridgeExportAudioMimeType(src, item).contains("mpeg", true) -> "mp3"
+            bridgeExportAudioMimeType(src, item).contains("mp4", true) -> "m4a"
+            bridgeExportAudioMimeType(src, item).contains("aac", true) -> "aac"
+            else -> src.extension.ifBlank { "bin" }.lowercase(Locale.ROOT)
+        }
+    }
+
+    private fun bridgeExportedAudioMimeType(src: File, item: JSONObject): String {
+        return if (bridgeExportIsRawPcm(src, item)) {
+            "audio/pcm"
+        } else {
+            bridgeExportAudioMimeType(src, item)
+        }
+    }
+
+    private fun writeBridgeAscii(out: java.io.OutputStream, value: String) {
+        out.write(value.toByteArray(java.nio.charset.StandardCharsets.US_ASCII))
+    }
+
+    private fun writeBridgeLeShort(out: java.io.OutputStream, value: Int) {
+        out.write(value and 0xff)
+        out.write((value shr 8) and 0xff)
+    }
+
+    private fun writeBridgeLeInt(out: java.io.OutputStream, value: Int) {
+        out.write(value and 0xff)
+        out.write((value shr 8) and 0xff)
+        out.write((value shr 16) and 0xff)
+        out.write((value shr 24) and 0xff)
+    }
+
+    private fun writeBridgeRawPcmAsWav(src: File, dst: File, item: JSONObject) {
+        val sampleRate = bridgeExportSampleRate(item)
+        val channels = bridgeExportChannelCount(item)
+        val bitsPerSample = bridgeExportBitsPerSample(item)
+        val bytesPerSample = (bitsPerSample / 8).coerceAtLeast(1)
+        val dataSizeLong = src.length()
+
+        if (dataSizeLong <= 0L) {
+            throw IllegalStateException("PCM 文件为空: ${src.absolutePath}")
+        }
+        if (dataSizeLong > Int.MAX_VALUE - 44L) {
+            throw IllegalStateException("PCM 文件过大，无法写 WAV header: ${src.absolutePath}")
+        }
+
+        val dataSize = dataSizeLong.toInt()
+        val byteRate = sampleRate * channels * bytesPerSample
+        val blockAlign = channels * bytesPerSample
+
+        dst.parentFile?.mkdirs()
+
+        java.io.FileOutputStream(dst).use { out ->
+            writeBridgeAscii(out, "RIFF")
+            writeBridgeLeInt(out, 36 + dataSize)
+            writeBridgeAscii(out, "WAVE")
+
+            writeBridgeAscii(out, "fmt ")
+            writeBridgeLeInt(out, 16)
+            writeBridgeLeShort(out, 1)
+            writeBridgeLeShort(out, channels)
+            writeBridgeLeInt(out, sampleRate)
+            writeBridgeLeInt(out, byteRate)
+            writeBridgeLeShort(out, blockAlign)
+            writeBridgeLeShort(out, bitsPerSample)
+
+            writeBridgeAscii(out, "data")
+            writeBridgeLeInt(out, dataSize)
+
+            src.inputStream().use { input ->
+                input.copyTo(out)
+            }
+        }
+    }
+
+    private fun bridgeExportCopyOrWrapAudio(src: File, dst: File, item: JSONObject) {
+        // ReaderAudioCache 交接给 J阅读时，PCM 必须原样导出。
+        // 不再写 RIFF/WAVE header，不再把 .pcm 伪装成 .wav。
+        dst.parentFile?.mkdirs()
+        src.copyTo(dst, overwrite = true)
+    }
+
+
+
+    private fun bridgeExportStripEmotionPrefix(text: String): String {
+        return String(text.toCharArray())
+            .replace(Regex("^\\[\\[(emo|emotion)[^\\]]*\\]\\]", RegexOption.IGNORE_CASE), "")
+            .trim()
+    }
+
+
+    private fun bridgeExportNormalizeForChapterMatch(value: String): String {
+        return bridgeExportStripEmotionPrefix(value)
+            .replace(
+                Regex("\\[\\[(emo|emotion|mimo_ctx|mimo_context|mimo_director|mimo_nl|mimo_tag|mimo_mode)[^\\]]*\\]\\]", RegexOption.IGNORE_CASE),
+                ""
+            )
+            .replace(Regex("[\\s\\u3000\\u2000-\\u200F\\u2028-\\u202F\\uFEFF]+"), "")
+            .replace(Regex("[“”\\\"'‘’「」『』]"), "")
+            .trim()
+    }
+
+
+    private fun bridgeExportReadCurrentChapterForOffset(context: Context): JSONObject? {
+        try {
+            val candidates = mutableListOf<File>()
+            val root = context.getExternalFilesDir(null) ?: return null
+
+            candidates.add(File(root, "jread_current_chapter.json"))
+
+            val pluginRoot = File(root, "plugins")
+            pluginRoot.listFiles()?.forEach { dir ->
+                if (dir.isDirectory) {
+                    candidates.add(File(dir, "jread_current_chapter.json"))
+                }
+            }
+
+            val files = candidates
+                .filter { it.exists() && it.isFile && it.length() > 0L }
+                .sortedByDescending { it.lastModified() }
+
+            for (file in files) {
+                try {
+                    val obj = JSONObject(file.readText(Charsets.UTF_8))
+                    val content = obj.optString("chapterContent", "")
+                    if (content.isNotBlank()) return obj
+                } catch (_: Throwable) {
+                }
+            }
+        } catch (_: Throwable) {
+        }
+
+        return null
+    }
+
+    private fun bridgeExportInferOffsetsFromCurrentChapter(context: Context, text: String): IntArray? {
+        val cleanText = bridgeExportStripEmotionPrefix(text)
+        if (cleanText.isBlank()) return null
+
+        val chapter = bridgeExportReadCurrentChapterForOffset(context) ?: return null
+        val chapterContent = chapter.optString("chapterContent", "")
+        if (chapterContent.isBlank()) return null
+
+        var start = chapterContent.indexOf(cleanText)
+
+        if (start < 0) {
+            val compactNeedle = bridgeExportNormalizeForChapterMatch(cleanText)
+            val compactChapter = bridgeExportNormalizeForChapterMatch(chapterContent)
+            val compactStart = compactChapter.indexOf(compactNeedle)
+
+            // 兜底：紧凑文本能找到时，只用于通过“当前章存在性”校验。
+            // 偏移会近似，但至少不会导出别的书/别的章。
+            if (compactStart >= 0 && compactNeedle.isNotBlank()) {
+                return intArrayOf(compactStart, compactStart + compactNeedle.length)
+            }
+
+            return null
+        }
+
+        return intArrayOf(start, start + cleanText.length)
+    }
+
+
+
+    private fun bridgeAudioCacheStableKey(item: JSONObject): String {
+        val start = item.optInt("startOffset", -1)
+        val end = item.optInt("endOffset", -1)
+        val textHash = item.optString("textHash", "")
+            .ifBlank { item.optString("lookupTextHash", "") }
+        val contentHash = item.optString("contentHash", "")
+        val chapterIndex = item.optInt("chapterIndex", -1)
+
+        if (start >= 0 && end >= start) {
+            return "offset|$contentHash|$chapterIndex|$start|$end|$textHash"
+        }
+
+        val normalizedText = bridgeExportNormalizeForChapterMatch(item.optString("text", ""))
+        if (textHash.isNotBlank() || normalizedText.isNotBlank()) {
+            return "text|$contentHash|$chapterIndex|$textHash|$normalizedText"
+        }
+
+        // 极端兜底：旧缓存 item 如果没有 offset/text/textHash，至少按 path 区分。
+        // 否则 compact 去重会把一整章合并成 1 条。
+        val path = item.optString("path", "")
+        return "path|$contentHash|$chapterIndex|$path"
+    }
+
+    private fun bridgeAudioCacheSortStart(item: JSONObject): Int {
+        val start = item.optInt("startOffset", -1)
+        return if (start >= 0) start else Int.MAX_VALUE
+    }
+
+    private fun bridgeChooseNewerAudioItem(oldItem: JSONObject?, newItem: JSONObject): JSONObject {
+        if (oldItem == null) return newItem
+
+        val oldUpdated = oldItem.optLong("updatedAt", 0L)
+        val newUpdated = newItem.optLong("updatedAt", 0L)
+
+        val oldPath = oldItem.optString("path", "")
+        val newPath = newItem.optString("path", "")
+
+        val oldTime = if (oldUpdated > 0L) oldUpdated else if (oldPath.isNotBlank()) File(oldPath).lastModified() else 0L
+        val newTime = if (newUpdated > 0L) newUpdated else if (newPath.isNotBlank()) File(newPath).lastModified() else 0L
+
+        return if (newTime >= oldTime) newItem else oldItem
+    }
+
+    private fun bridgeCompactReaderAudioManifest(manifestFile: File?, manifest: JSONObject): JSONObject {
+        val arr = manifest.optJSONArray("segments") ?: manifest.optJSONArray("items") ?: JSONArray()
+        val map = java.util.LinkedHashMap<String, JSONObject>()
+        val duplicatePaths = mutableListOf<String>()
+
+        for (i in 0 until arr.length()) {
+            val item = arr.optJSONObject(i) ?: continue
+            val key = bridgeAudioCacheStableKey(item)
+            val old = map[key]
+            val chosen = bridgeChooseNewerAudioItem(old, item)
+
+            if (old != null && chosen !== old) {
+                val oldPath = old.optString("path", "")
+                if (oldPath.isNotBlank()) duplicatePaths.add(oldPath)
+            } else if (old != null && chosen !== item) {
+                val newPath = item.optString("path", "")
+                if (newPath.isNotBlank()) duplicatePaths.add(newPath)
+            }
+
+            map[key] = chosen
+        }
+
+        val list = map.values.toMutableList()
+        list.sortWith { a, b ->
+            val byStart = bridgeAudioCacheSortStart(a).compareTo(bridgeAudioCacheSortStart(b))
+            if (byStart != 0) {
+                byStart
+            } else {
+                val byEnd = a.optInt("endOffset", -1).compareTo(b.optInt("endOffset", -1))
+                if (byEnd != 0) byEnd else a.optInt("index", 0).compareTo(b.optInt("index", 0))
+            }
+        }
+
+        val compact = JSONArray()
+        list.forEachIndexed { idx, item ->
+            if (!item.has("sourceIndex")) {
+                item.put("sourceIndex", item.optInt("index", idx))
+            }
+            if (!item.has("sourceOrder")) {
+                item.put("sourceOrder", item.optInt("order", idx))
+            }
+
+            // 源缓存 manifest 内也保持 index 连续，避免停止/重读后序号越来越乱。
+            item.put("index", idx)
+            item.put("order", idx)
+            compact.put(item)
+        }
+
+        manifest.put("segments", compact)
+        manifest.put("items", compact)
+        manifest.put("segmentCount", compact.length())
+        manifest.put("updatedAt", System.currentTimeMillis())
+
+        // 只删除被判定为重复且未被保留的音频文件；不清理整章缓存，避免误删。
+        duplicatePaths.distinct().forEach { path ->
+            try {
+                val f = File(path)
+                val root = manifestFile?.parentFile
+                if (root != null && f.exists() && f.isFile && f.canonicalPath.startsWith(root.canonicalPath + File.separator)) {
+                    f.delete()
+                }
+            } catch (_: Throwable) {
+            }
+        }
+
+        return manifest
+    }
+
+    private fun writeReaderAudioManifestDeduped(manifestFile: File, manifest: JSONObject) {
+        val compact = bridgeCompactReaderAudioManifest(manifestFile, manifest)
+        manifestFile.parentFile?.mkdirs()
+        manifestFile.writeText(compact.toString(2), Charsets.UTF_8)
+    }
+
+    private fun bridgePrepareExportItemsSortedUnique(
+        context: Context,
+        sourceItems: JSONArray,
+        sessionId: String,
+        contentHash: String,
+        chapterIndex: Int
+    ): JSONArray {
+        val map = java.util.LinkedHashMap<String, JSONObject>()
+
+        for (i in 0 until sourceItems.length()) {
+            val item = sourceItems.optJSONObject(i) ?: continue
+
+            var itemStartOffset = item.optInt("startOffset", -1)
+            var itemEndOffset = item.optInt("endOffset", -1)
+
+            val inferredFromCurrentChapter = bridgeExportInferOffsetsFromCurrentChapter(
+                context,
+                item.optString("text", "")
+            )
+
+            var verifiedByCurrentChapter = false
+
+            if (itemStartOffset < 0 || itemEndOffset < itemStartOffset) {
+                if (inferredFromCurrentChapter == null) {
+                    continue
+                } else {
+                    itemStartOffset = inferredFromCurrentChapter[0]
+                    itemEndOffset = inferredFromCurrentChapter[1]
+                    verifiedByCurrentChapter = true
+                }
+            } else if (inferredFromCurrentChapter != null) {
+                itemStartOffset = inferredFromCurrentChapter[0]
+                itemEndOffset = inferredFromCurrentChapter[1]
+                verifiedByCurrentChapter = true
+            }
+
+            if (!verifiedByCurrentChapter) {
+                val itemSessionId = item.optString("sessionId", "")
+                val itemContentHash = item.optString("contentHash", "")
+                val itemChapterIndex = item.optInt("chapterIndex", -999999)
+
+                // sessionId 只作调试，不作强过滤；停止/重开后同章缓存可能来自多个 sessionId
+                if (contentHash.isNotBlank() && itemContentHash != contentHash) continue
+                if (chapterIndex >= 0 && itemChapterIndex != chapterIndex) continue
+            }
+
+            if (sessionId.isNotBlank()) item.put("sessionId", sessionId)
+            if (contentHash.isNotBlank()) item.put("contentHash", contentHash)
+            if (chapterIndex >= 0) item.put("chapterIndex", chapterIndex)
+
+            item.put("startOffset", itemStartOffset)
+            item.put("endOffset", itemEndOffset)
+
+            val key = bridgeAudioCacheStableKey(item)
+            map[key] = bridgeChooseNewerAudioItem(map[key], item)
+        }
+
+        val list = map.values.toMutableList()
+        list.sortWith { a, b ->
+            val byStart = bridgeAudioCacheSortStart(a).compareTo(bridgeAudioCacheSortStart(b))
+            if (byStart != 0) {
+                byStart
+            } else {
+                val byEnd = a.optInt("endOffset", -1).compareTo(b.optInt("endOffset", -1))
+                if (byEnd != 0) byEnd else a.optInt("index", 0).compareTo(b.optInt("index", 0))
+            }
+        }
+
+        val out = JSONArray()
+        list.forEachIndexed { idx, item ->
+            item.put("exportIndex", idx)
+            out.put(item)
+        }
+
+        return out
+    }
+
+
+    fun exportReaderAudioCacheForBridge(
+        context: Context,
+        requestId: String,
+        sessionId: String,
+        contentHash: String,
+        bookName: String,
+        chapterTitle: String,
+        chapterIndex: Int,
+        providerAuthority: String,
+    ): JSONObject {
+        val root = File(context.getExternalFilesDir(null), "reader_audio_cache")
+        if (!root.exists()) root.mkdirs()
+
+        val exportDir = File(root, "exports/${bridgeSafeFileName(requestId)}")
+        if (!exportDir.exists()) exportDir.mkdirs()
+
+        val manifestFile = bridgeFindBestAudioManifest(
+            context = context,
+            bookName = bookName,
+            chapterTitle = chapterTitle,
+            chapterIndex = chapterIndex,
+            contentHash = contentHash,
+        ) ?: throw IllegalStateException("未找到 AudioCacheFactory 已缓存音频 manifest。请先让 J.TTS 朗读/生成一些片段后再导出。")
+
+        val sourceManifest = runCatching {
+            JSONObject(manifestFile.readText())
+        }.getOrElse {
+            throw IllegalStateException("读取 AudioCacheFactory manifest 失败: ${manifestFile.absolutePath} ${it.message}")
+        }
+
+        val sourceItems = sourceManifest.optJSONArray("items") ?: JSONArray()
+        val segments = JSONArray()
+
+        val exportItems = bridgePrepareExportItemsSortedUnique(
+            context = context,
+            sourceItems = sourceItems,
+            sessionId = sessionId,
+            contentHash = contentHash,
+            chapterIndex = chapterIndex
+        )
+
+        for (i in 0 until exportItems.length()) {
+            val item = exportItems.optJSONObject(i) ?: continue
+            val path = item.optString("path", "")
+            if (path.isBlank()) continue
+
+            val src = File(path)
+            if (!src.exists() || !src.isFile || src.length() <= 0L) continue
+            if (!isAudioCacheFile(src)) continue
+
+            var itemSessionId = item.optString("sessionId", "")
+            var itemContentHash = item.optString("contentHash", "")
+            val itemChapterIndex = item.optInt("chapterIndex", -999999)
+            var itemStartOffset = item.optInt("startOffset", -1)
+            var itemEndOffset = item.optInt("endOffset", -1)
+
+            // J阅读导出必须只导出“能证明属于当前章节”的片段。
+            // 最高优先级：item.text 能在当前 jread_current_chapter.json 里找到。
+            // 这样可以修正旧 pointer / 旧 sessionId / 旧 contentHash 导致的自动导出空目录。
+            val inferredFromCurrentChapter = bridgeExportInferOffsetsFromCurrentChapter(
+                context,
+                item.optString("text", "")
+            )
+
+            var verifiedByCurrentChapter = false
+
+            if (itemStartOffset < 0 || itemEndOffset < itemStartOffset) {
+                if (inferredFromCurrentChapter == null) {
+                    continue
+                } else {
+                    itemStartOffset = inferredFromCurrentChapter[0]
+                    itemEndOffset = inferredFromCurrentChapter[1]
+                    verifiedByCurrentChapter = true
+                }
+            } else {
+                if (inferredFromCurrentChapter != null) {
+                    // 即使 item 自带旧 offset，只要文本能在当前章找到，就以当前章为准。
+                    itemStartOffset = inferredFromCurrentChapter[0]
+                    itemEndOffset = inferredFromCurrentChapter[1]
+                    verifiedByCurrentChapter = true
+                }
+            }
+
+            if (!verifiedByCurrentChapter) {
+                // 没有被当前章文本证明时，必须严格匹配 request metadata。
+                // sessionId 只作调试，不作强过滤；停止/重开后同章缓存可能来自多个 sessionId
+                if (contentHash.isNotBlank() && itemContentHash != contentHash) continue
+                if (chapterIndex >= 0 && itemChapterIndex != chapterIndex) continue
+            }
+
+            // 只要已经被当前章节文本证明，就强制覆盖成当前 request 元数据。
+            if (sessionId.isNotBlank()) {
+                itemSessionId = sessionId
+                item.put("sessionId", sessionId)
+            }
+            if (contentHash.isNotBlank()) {
+                itemContentHash = contentHash
+                item.put("contentHash", contentHash)
+            }
+            if (chapterIndex >= 0) {
+                item.put("chapterIndex", chapterIndex)
+            }
+
+            item.put("startOffset", itemStartOffset)
+            item.put("endOffset", itemEndOffset)
+
+            val sourceIndex = item.optInt("index", i)
+
+            val exportIndex = segments.length()
+
+            val isRawPcm = bridgeExportIsRawPcm(src, item)
+
+            val sampleRate = bridgeExportSampleRate(item)
+
+            val channelCount = bridgeExportChannelCount(item)
+
+            val bitsPerSample = bridgeExportBitsPerSample(item)
+
+            val bytesPerSample = (bitsPerSample / 8).coerceAtLeast(1)
+
+            val ext = bridgeExportTargetExtension(src, item)
+
+            val outName = "%06d_%s.%s".format(
+                exportIndex,
+                bridgeSafeFileName(item.optString("textHash", "").ifBlank { src.nameWithoutExtension }),
+                ext
+            )
+            val rootCanonical = root.canonicalFile
+            val srcCanonical = src.canonicalFile
+            val sourceInProviderRoot = srcCanonical.path == rootCanonical.path ||
+                srcCanonical.path.startsWith(rootCanonical.path + File.separator)
+            val dst = if (sourceInProviderRoot) srcCanonical else File(exportDir, outName)
+
+            // PCM 原样导出，不再包 WAV header，所以导出大小必须等于源文件大小。
+
+            val expectedSize = src.length()
+
+            if (!sourceInProviderRoot && (!dst.exists() || dst.length() != expectedSize)) {
+
+                bridgeExportCopyOrWrapAudio(src, dst, item)
+
+            }
+
+            if (!dst.exists() || dst.length() != expectedSize) {
+
+                throw IllegalStateException("导出音频分片大小异常: ${dst.absolutePath}, expected=$expectedSize, actual=${dst.length()}")
+
+            }
+
+
+            val exportedSize = dst.length()
+
+            val bytesPerSecond = sampleRate.toLong() * channelCount.toLong() * bytesPerSample.toLong()
+
+            val durationMs = if (isRawPcm && bytesPerSecond > 0L) {
+
+                exportedSize * 1000L / bytesPerSecond
+
+            } else {
+
+                item.optLong("durationMs", -1L)
+
+            }
+
+
+            val audioUri = bridgeUriForFile(root, dst, providerAuthority)
+
+
+            val relativeFile = dst.canonicalFile.relativeTo(root.canonicalFile).path.replace(File.separatorChar, '/')
+
+            val seg = JSONObject()
+            seg.put("seq", exportIndex)
+            seg.put("index", exportIndex)
+            seg.put("exportIndex", exportIndex)
+            seg.put("sourceIndex", sourceIndex)
+            seg.put("order", exportIndex)
+            seg.put("sourceOrder", item.optInt("order", sourceIndex))
+            seg.put("text", item.optString("text", ""))
+            seg.put("textHash", item.optString("textHash", ""))
+            seg.put("lookupTextHash", item.optString("lookupTextHash", ""))
+            seg.put("tag", item.optString("tag", ""))
+            seg.put("voice", item.optString("voice", ""))
+            seg.put("actualVoice", item.optString("actualVoice", ""))
+            seg.put("emotion", item.optString("emotion", ""))
+            seg.put("startOffset", item.optInt("startOffset", -1))
+            seg.put("endOffset", item.optInt("endOffset", -1))
+            seg.put("durationMs", durationMs)
+            seg.put("uri", audioUri.toString())
+            seg.put("audioUri", audioUri.toString())
+            seg.put("audioMimeType", bridgeExportedAudioMimeType(src, item))
+            seg.put("sourceAudioMimeType", bridgeExportAudioMimeType(src, item))
+            seg.put("rawPcm", isRawPcm)
+            seg.put("wrappedFromPcm", false)
+            seg.put("sampleRate", sampleRate)
+            seg.put("channels", channelCount)
+            seg.put("channelCount", channelCount)
+            seg.put("bitsPerSample", bitsPerSample)
+            seg.put("pcmFormat", if (isRawPcm) "PCM_${bitsPerSample}BIT" else "")
+            seg.put("length", exportedSize)
+            seg.put("sizeBytes", exportedSize)
+            seg.put("sourceSizeBytes", src.length())
+            seg.put("copiedForExport", !sourceInProviderRoot)
+            seg.put("file", relativeFile)
+            seg.put("fileName", dst.name)
+            seg.put("sourceFileName", src.name)
+            segments.put(seg)
+        }
+
+        if (segments.length() == 0) {
+            throw IllegalStateException("AudioCacheFactory manifest 存在，但没有可导出的音频片段: ${manifestFile.absolutePath}")
+        }
+
+        val allRawPcm = (0 until segments.length()).all { idx ->
+            segments.optJSONObject(idx)?.optBoolean("rawPcm", false) == true
+        }
+        val firstSegment = segments.optJSONObject(0)
+
+        val out = JSONObject()
+        out.put("method", "exportReaderAudioCache")
+        out.put("status", "done")
+        out.put("manifestVersion", 2)
+        out.put("format", if (allRawPcm) "pcm-segments" else "audio-segments")
+        out.put("audioMimeType", if (allRawPcm) "audio/pcm" else "")
+        out.put("handoffMode", "reader-copy-then-ack")
+        out.put("requiresAckBeforeDelete", true)
+        if (firstSegment != null) {
+            out.put("sampleRate", firstSegment.optInt("sampleRate", 16000))
+            out.put("channels", firstSegment.optInt("channels", 1))
+            out.put("channelCount", firstSegment.optInt("channelCount", 1))
+            out.put("bitsPerSample", firstSegment.optInt("bitsPerSample", 16))
+            out.put("pcmFormat", firstSegment.optString("pcmFormat", "PCM_16BIT"))
+        }
+        out.put("requestId", requestId)
+        out.put("sessionId", sessionId)
+        out.put("contentHash", contentHash)
+        out.put("bookName", bookName.ifBlank { sourceManifest.optString("bookName", "") })
+        out.put("chapterTitle", chapterTitle.ifBlank { sourceManifest.optString("chapterTitle", "") })
+        out.put("chapterIndex", if (chapterIndex >= 0) chapterIndex else sourceManifest.optInt("chapterIndex", -1))
+        out.put("sourceManifestPath", manifestFile.absolutePath)
+        out.put("segmentCount", segments.length())
+        out.put("segments", segments)
+        out.put("items", segments)
+        out.put("createdAt", System.currentTimeMillis())
+
+        val exportManifest = File(exportDir, "manifest.json")
+        out.put("manifestUri", bridgeUriForFile(root, exportManifest, providerAuthority).toString())
+        exportManifest.writeText(out.toString(2))
+
+        appendPreviewLog(
+            context = context,
+            source = "缓存片段导出",
+            message = "已导出 AudioCacheFactory 缓存片段｜数量=${segments.length()}｜manifest=${exportManifest.absolutePath}"
+        )
+
+        return out
+    }
+
+    private fun bridgeFindBestAudioManifest(
+        context: Context,
+        bookName: String,
+        chapterTitle: String,
+        chapterIndex: Int,
+        contentHash: String,
+    ): File? {
+        val root = context.getExternalFilesDir(null) ?: return null
+        val manifests = root.walkTopDown()
+            .filter { it.isFile && it.name == "manifest.json" }
+            .filter { file ->
+                runCatching {
+                    val text = file.readText()
+                    text.contains("\"items\"") && text.contains("\"path\"")
+                }.getOrDefault(false)
+            }
+            .toList()
+
+        if (manifests.isEmpty()) return null
+
+        fun score(file: File): Int {
+            val text = runCatching { file.readText() }.getOrDefault("")
+            var s = 0
+            if (contentHash.isNotBlank() && text.contains(contentHash)) s += 1000
+            if (bookName.isNotBlank() && text.contains(bookName)) s += 300
+            if (chapterTitle.isNotBlank() && text.contains(chapterTitle)) s += 300
+            if (chapterIndex >= 0 && text.contains("\"chapterIndex\":$chapterIndex")) s += 200
+            if (chapterIndex >= 0 && text.contains("\"chapterIndex\": $chapterIndex")) s += 200
+            s += ((file.lastModified() / 1000L) % 100000L).toInt()
+            return s
+        }
+
+        return manifests.maxWithOrNull(compareBy<File> { score(it) }.thenBy { it.lastModified() })
+    }
+
+    private fun bridgeUriForFile(root: File, file: File, authority: String): Uri {
+        val rootFile = root.canonicalFile
+        val target = file.canonicalFile
+
+        val rootPath = rootFile.absolutePath
+        val filePath = target.absolutePath
+
+        require(filePath == rootPath || filePath.startsWith(rootPath + File.separator)) {
+            "file outside export root: $filePath"
+        }
+
+        val rel = if (filePath == rootPath) "" else filePath.substring(rootPath.length + 1)
+        val builder = Uri.Builder()
+            .scheme("content")
+            .authority(authority)
+            .appendPath("reader_audio_cache")
+
+        if (rel.isNotBlank()) {
+            rel.split(File.separatorChar).forEach { part ->
+                if (part.isNotBlank()) builder.appendPath(part)
+            }
+        }
+
+        return builder.build()
+    }
+
+    private fun bridgeGuessMime(file: File): String {
+        return when (file.extension.lowercase(Locale.ROOT)) {
+            "mp3" -> "audio/mpeg"
+            "m4a", "aac" -> "audio/mp4"
+            "wav" -> "audio/wav"
+            "pcm" -> "audio/pcm"
+            else -> "application/octet-stream"
+        }
+    }
+
+    private fun bridgeSafeFileName(value: String): String {
+        return value.ifBlank { "item" }.replace(Regex("[^A-Za-z0-9_.-]"), "_")
+    }
+
+
 }

@@ -18,9 +18,13 @@ import java.net.URL
 object ReaderChapterBridgeClient {
     private const val DEFAULT_URL = "http://127.0.0.1:18326/tts/current-chapter"
     private const val CHAPTER_CONTENT_URL = "http://127.0.0.1:18326/getBookContent"
-    private const val CACHE_TTL_MS = 5000L
+    private const val CACHE_TTL_MS = 0L
     private const val DEFAULT_PRELOAD_COUNT = 4
     private const val MAX_PRELOAD_COUNT = 50
+
+    // 逐句缓存按章节归档：只允许读取当前章元信息，禁止整章窗口接管/预加载
+    private const val ENABLE_READER_CURRENT_CHAPTER_META = true
+    private const val ENABLE_READER_CHAPTER_WINDOW_BRIDGE = false
 
     @Volatile
     private var lastFetchAt: Long = 0L
@@ -36,6 +40,10 @@ object ReaderChapterBridgeClient {
 
     @Synchronized
     fun fetchCurrentChapterJson(): JSONObject {
+        if (!ENABLE_READER_CURRENT_CHAPTER_META) {
+            return buildError("ReaderBridgeDisabled", "sentence mode: current chapter meta disabled")
+        }
+
         val now = System.currentTimeMillis()
 
         val cached = lastJsonText
@@ -113,6 +121,10 @@ object ReaderChapterBridgeClient {
 
     @Synchronized
     fun fetchChapterWindowJson(): JSONObject {
+        if (!ENABLE_READER_CHAPTER_WINDOW_BRIDGE) {
+            return buildWindowError("ReaderBridgeDisabled", "sentence mode: chapter window bridge disabled")
+        }
+
         val now = System.currentTimeMillis()
 
         val cached = lastWindowJsonText

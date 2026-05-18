@@ -7,6 +7,7 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Update
+import androidx.room.SkipQueryVerification
 import com.github.jing332.database.constants.SpeechTarget
 import com.github.jing332.database.entities.AbstractListGroup.Companion.DEFAULT_GROUP_ID
 import com.github.jing332.database.entities.systts.GroupWithSystemTts
@@ -15,6 +16,7 @@ import com.github.jing332.database.entities.systts.v1.GroupWithV1TTS
 import com.github.jing332.database.entities.systts.v1.SystemTts
 import kotlinx.coroutines.flow.Flow
 
+@SkipQueryVerification
 @Dao
 interface SystemTtsDao {
     @get:Query("SELECT * FROM sysTts")
@@ -29,12 +31,14 @@ interface SystemTtsDao {
     @get:Query("SELECT count(speechRule_isStandby = '1') FROM sysTts")
     val standbyTtsCount: Int
 
+    @SkipQueryVerification
     @Query("SELECT * FROM sysTts WHERE isEnabled = '1' AND  speechRule_target = :target AND speechRule_isStandby = :isStandbyType")
     fun getEnabledList(
         target: Int = SpeechTarget.ALL,
         isStandbyType: Boolean = false
     ): List<SystemTts>
 
+    @SkipQueryVerification
     @Query("SELECT * FROM sysTts WHERE isEnabled = '1' AND  speechRule_target = :target AND speechRule_isStandby = :isStandbyType AND groupId = :groupId")
     fun getEnabledListByGroupId(
         groupId: Long,
@@ -42,9 +46,11 @@ interface SystemTtsDao {
         isStandbyType: Boolean = false,
     ): List<SystemTts>
 
+    @SkipQueryVerification
     @Query("SELECT * FROM sysTts WHERE groupId = :groupId")
     fun getTtsByGroup(groupId: Long): List<SystemTts>
 
+    @SkipQueryVerification
     @Query("SELECT * FROM sysTts WHERE id = :id")
     fun getTts(id: Long): SystemTts?
 
@@ -58,28 +64,34 @@ interface SystemTtsDao {
     val groupCount: Int
 
     @Transaction
+    @SkipQueryVerification
     @Query("SELECT * FROM SystemTtsGroup ORDER BY `order` ASC")
     fun getAllGroupWithTts(): List<GroupWithV1TTS>
 
     @Transaction
+    @SkipQueryVerification
     @Query("SELECT * FROM SystemTtsGroup ORDER BY `order` ASC")
     fun getFlowAllGroupWithTts(): Flow<List<GroupWithV1TTS>>
 
+    @SkipQueryVerification
     @Query("SELECT * FROM SystemTtsGroup WHERE groupId = :id")
     fun getGroup(id: Long = DEFAULT_GROUP_ID): SystemTtsGroup?
 
+    @SkipQueryVerification
     @Query("SELECT * FROM sysTts WHERE groupId = :groupId ORDER BY `order` ASC")
     fun getTtsListByGroupId(groupId: Long): List<SystemTts>
 
     /**
      * 所有TTS 是否启用
      */
+    @SkipQueryVerification
     @Query("UPDATE sysTts SET isEnabled = :isEnabled")
     fun setAllTtsEnabled(isEnabled: Boolean)
 
     /**
      * 设置某个组中的所有TTS 是否启用
      */
+    @SkipQueryVerification
     @Query("UPDATE sysTts SET isEnabled = :isEnabled WHERE groupId = :groupId")
     fun setTtsEnabledInGroup(groupId: Long, isEnabled: Boolean)
 
@@ -92,6 +104,7 @@ interface SystemTtsDao {
     @Delete
     fun deleteTts(vararg items: SystemTts)
 
+    @SkipQueryVerification
     @Query("DELETE from sysTts WHERE groupId = :groupId")
     fun deleteTtsByGroup(groupId: Long)
 
@@ -105,6 +118,7 @@ interface SystemTtsDao {
     fun deleteGroup(group: SystemTtsGroup)
 
     @Transaction
+    @SkipQueryVerification
     @Query("SELECT * FROM SystemTtsGroup ORDER BY `order` ASC")
     fun getSysTtsWithGroups(): List<GroupWithSystemTts>
 

@@ -6,9 +6,11 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Update
+import androidx.room.SkipQueryVerification
 import com.github.jing332.database.entities.plugin.Plugin
 import kotlinx.coroutines.flow.Flow
 
+@SkipQueryVerification
 @Dao
 interface PluginDao {
     @get:Query("SELECT * FROM plugin ORDER BY `order` ASC, pluginId ASC, version DESC, id DESC")
@@ -17,6 +19,7 @@ interface PluginDao {
     @get:Query("SELECT * FROM plugin WHERE isEnabled = 1 ORDER BY `order` ASC, pluginId ASC, version DESC, id DESC")
     val allEnabled: List<Plugin>
 
+    @SkipQueryVerification
     @Query("SELECT * FROM plugin ORDER BY `order` ASC, pluginId ASC, version DESC, id DESC")
     fun flowAll(): Flow<List<Plugin>>
 
@@ -36,6 +39,7 @@ interface PluginDao {
      * 兼容旧调用：
      * 如果同一个 pluginId 有多个版本，默认返回版本号最高的那个。
      */
+    @SkipQueryVerification
     @Query(
         """
         SELECT * FROM plugin 
@@ -50,6 +54,7 @@ interface PluginDao {
      * 新增：精确查找同源同版本插件。
      * 用于导入备份时判断“更新同版本”还是“新增不同版本”。
      */
+    @SkipQueryVerification
     @Query(
         """
         SELECT * FROM plugin 
@@ -67,6 +72,7 @@ interface PluginDao {
      * 注意：如果以后想让不同语音分别绑定不同版本插件，
      * TTS 配置里还需要保存 pluginVersion。
      */
+    @SkipQueryVerification
     @Query(
         """
         SELECT * FROM plugin 

@@ -3,7 +3,6 @@ package com.github.jing332.tts_server_android.compose
 import androidx.annotation.StringRes
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.automirrored.filled.TextSnippet
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
@@ -24,7 +23,6 @@ sealed class PagerDestination(
                 SystemTts,
                 SystemTtsLog,
                 SystemTtsForwarder,
-                ScriptPreview,
                 Settings
             )
         }
@@ -53,14 +51,7 @@ sealed class PagerDestination(
         )
     })
 
-    object ScriptPreview : PagerDestination(3, R.string.script_preview, {
-        Icon(
-            Icons.AutoMirrored.Default.MenuBook,
-            contentDescription = null
-        )
-    })
-
-    object Settings : PagerDestination(4, R.string.settings, {
-        Icon(Icons.Default.Settings, null)
+    object Settings : PagerDestination(3, R.string.settings, {
+        Icon(Icons.Default.Settings, contentDescription = null)
     })
 }

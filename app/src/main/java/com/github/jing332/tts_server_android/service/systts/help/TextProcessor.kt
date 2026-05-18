@@ -1,6 +1,7 @@
 package com.github.jing332.tts_server_android.service.systts.help
 
 import android.content.Context
+import android.util.Log
 import com.github.jing332.common.utils.StringUtils
 import com.github.jing332.database.constants.ReplaceExecution
 import com.github.jing332.database.dbm
@@ -41,7 +42,7 @@ class TextProcessor : ITextProcessor {
     private val random by lazy { Random(System.currentTimeMillis()) }
 
     private fun appendSpeechRuleLog(context: Context, message: String) {
-        AudioCacheFactory.appendPreviewLog(context, "朗读规则", message)
+        Log.i("朗读规则", message)
     }
 
     private fun normalizeSpeechRuleLookupId(ruleId: String): String {
@@ -535,16 +536,142 @@ class TextProcessor : ITextProcessor {
     }
 
     private fun splitText(text: String): List<String> {
-        return if (!isSplitSentence) {
-            listOf(text)
-        } else if (isMultiVoice) {
-            try {
-                engine.splitText(text).map { it.toString() }
-            } catch (_: NoSuchMethodException) {
-                StringUtils.splitSentences(text)
-            }
+        val clean = text.trim()
+        if (clean.isBlank()) return emptyList()
+
+        // 接上右上角“分割长句”开关：
+        // 关闭时不强制切短；开启时才执行下面的 55 字 + 标点切分。
+        if (!isSplitSentence) return listOf(clean)
+
+        // 保护后置情绪模块生成的提示词前缀：
+        // 1. [[emo:coldness]](冷淡，语调平直)
+        // 2. (急促｜气息发紧)
+        // 3. （急促｜气息发紧）
+        // 这些前缀不能被逗号/顿号切开，并且切分后的每段都要继承。
+        val leadingStylePrefixRegex = Regex("""^\s*(?:(?:\[\[emo:[^\]]+\]\]\s*(?:[（(][^）)]{1,80}[）)]))|(?:[（(][^）)]{1,80}[）)]))+\s*""")
+        val styleKeywordRegex = Regex("""情绪|语调|气息|急促|发紧|冷淡|平直|紧张|平静|低声|高声|兴奋|悲伤|愤怒|温柔|严肃|疑惑|焦急|喘|沉稳|轻声|压低|克制|慌张""")
+        val inlineStyleRegex = Regex("""(?:\[\[emo:[^\]]+\]\]\s*(?:[（(][^）)]{1,80}[）)]))|(?:[（(][^）)]{1,80}[）)])""")
+
+        val leadingMatch = leadingStylePrefixRegex.find(clean)
+        val leadingCandidate = leadingMatch?.value?.trim().orEmpty()
+
+        val hasStylePrefix = leadingCandidate.isNotBlank() &&
+                (
+                        leadingCandidate.contains("[[emo:") ||
+                                leadingCandidate.contains("｜") ||
+                                leadingCandidate.contains("|") ||
+                                styleKeywordRegex.containsMatchIn(leadingCandidate)
+                        )
+
+        val stylePrefix = if (hasStylePrefix) leadingCandidate else ""
+
+        val bodyText = if (stylePrefix.isNotBlank() && leadingMatch != null) {
+            clean.substring(leadingMatch.range.last + 1).trimStart()
         } else {
-            StringUtils.splitSentences(text)
+            clean
+        }
+
+        if (bodyText.isBlank()) return listOf(clean)
+
+        val maxLen = 55
+        val minPunctuationCutLen = 18
+
+        fun forceShortSplit(piece: String): List<String> {
+            val result = mutableListOf<String>()
+            val buf = StringBuilder()
+            var bufStartIndex = 0
+
+            val protectedRanges = inlineStyleRegex.findAll(piece)
+                .mapNotNull { match ->
+                    val value = match.value
+                    val shouldProtect =
+                        value.contains("[[emo:") ||
+                                value.contains("｜") ||
+                                value.contains("|") ||
+                                styleKeywordRegex.containsMatchIn(value)
+                    if (shouldProtect) match.range else null
+                }
+                .toList()
+
+            fun isProtected(index: Int): Boolean {
+                return protectedRanges.any { index in it }
+            }
+
+            fun flush(nextStartIndex: Int) {
+                val value = buf.toString().trim()
+                if (value.isNotBlank()) result.add(value)
+                buf.clear()
+                bufStartIndex = nextStartIndex
+            }
+
+            fun isCutPunctuation(ch: Char): Boolean {
+                return ch == '。' || ch == '！' || ch == '？' ||
+                        ch == '；' || ch == ';' ||
+                        ch == '，' || ch == ',' ||
+                        ch == '、' ||
+                        ch == '\n' || ch == '\r'
+            }
+
+            piece.forEachIndexed { index, ch ->
+                if (buf.length == 0) bufStartIndex = index
+                buf.append(ch)
+
+                if (!isProtected(index) && isCutPunctuation(ch) && buf.length >= minPunctuationCutLen) {
+                    flush(index + 1)
+                    return@forEachIndexed
+                }
+
+                if (!isProtected(index) && buf.length >= maxLen) {
+                    val current = buf.toString()
+                    val candidates = listOf(
+                        current.lastIndexOf("，"),
+                        current.lastIndexOf(","),
+                        current.lastIndexOf("、"),
+                        current.lastIndexOf("；"),
+                        current.lastIndexOf(";"),
+                        current.lastIndexOf(" ")
+                    ).filter { pos ->
+                        pos >= 12 && !isProtected(bufStartIndex + pos)
+                    }
+
+                    val cutAt = candidates.maxOrNull() ?: -1
+
+                    if (cutAt > 0 && cutAt < current.length - 1) {
+                        val head = current.substring(0, cutAt + 1).trim()
+                        val tailRaw = current.substring(cutAt + 1)
+                        val dropped = tailRaw.length - tailRaw.trimStart().length
+                        val tail = tailRaw.trimStart()
+
+                        if (head.isNotBlank()) result.add(head)
+                        buf.clear()
+                        buf.append(tail)
+                        bufStartIndex = bufStartIndex + cutAt + 1 + dropped
+                    } else {
+                        flush(index + 1)
+                    }
+                }
+            }
+
+            val last = buf.toString().trim()
+            if (last.isNotBlank()) result.add(last)
+
+            return result
+        }
+
+        val pieces = forceShortSplit(bodyText)
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+
+        if (stylePrefix.isBlank()) return pieces
+
+        // 每个切出来的小段都继承完整情绪/语气前缀，避免后半段丢提示词。
+        return pieces.map { part ->
+            val cleanPart = part.trimStart()
+            if (cleanPart.startsWith(stylePrefix)) {
+                cleanPart
+            } else {
+                stylePrefix + cleanPart
+            }
         }
     }
 
@@ -580,12 +707,56 @@ class TextProcessor : ITextProcessor {
         }
 
         fun splitAndAdd(text: String, config: TtsConfiguration) {
-            splitText(text).forEach {
-                if (hasSpeakableContent(it)) {
-                    add(TextSegment(text = it, tts = config))
+            splitText(text).forEach { segment ->
+                var checkText = segment.trim()
+
+                // 去掉开头的情绪/语气提示词，例如 [开心]、【低声】、（旁白）、(生气)
+                while (true) {
+                    val before = checkText
+                    checkText = checkText
+                        .replace(
+                            Regex("""^\s*[\[【（(][^\]】）)]{1,20}[\]】）)]\s*[:：，,、。.!！?？…—-]*\s*"""),
+                            ""
+                        )
+                        .trim()
+
+                    if (checkText == before) break
+                }
+
+                // 去掉情绪/语气前缀后，正文必须至少包含一个真实可朗读字符
+                // 只有标点、引号、括号、破折号、省略号时不送 TTS
+                val hasRealText = checkText.any { ch ->
+                    ch.isLetterOrDigit()
+                }
+
+                if (hasSpeakableContent(segment) && hasRealText) {
+                    add(TextSegment(text = segment, tts = config))
                 }
             }
         }
+
+        fun stripLeadingStylePrefixForSpeakableCheck(value: String): String {
+            var textValue = value.trim()
+
+            // 去掉开头的情绪/语气提示词：
+            // [[emo:tension]](急促｜气息发紧)
+            // (急促｜气息发紧)
+            // （急促｜气息发紧）
+            val prefixRegex = Regex("""^\s*(?:(?:\[\[emo:[^\]]+\]\]\s*)?(?:[（(][^）)]{1,80}[）)])|\[\[emo:[^\]]+\]\])+\s*""")
+
+            while (true) {
+                val match = prefixRegex.find(textValue) ?: break
+                if (match.range.first != 0) break
+
+                val next = textValue.substring(match.range.last + 1).trimStart()
+                if (next == textValue) break
+                textValue = next
+            }
+
+            return textValue.trim()
+        }
+
+
 
         try {
             if (presetConfig != null) {

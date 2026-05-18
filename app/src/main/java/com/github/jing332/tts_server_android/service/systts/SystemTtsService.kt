@@ -108,6 +108,13 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
         @Volatile
         private var currentManager: MixSynthesizer? = null
 
+        // 开源阅读端已负责整章音频合成时，TTS 端不再额外缓存 PCM。
+        // 关闭后：不查 reader_audio_cache，不写 PCM，不额外攒一份 ByteArrayOutputStream。
+        private const val ENABLE_READER_AUDIO_CACHE = true
+        // 先关闭播放前同步查缓存，避免章节桥接/缓存读取阻塞导致开源阅读等待音频
+        private const val ENABLE_READER_AUDIO_CACHE_LOOKUP = true
+        private const val ENABLE_READER_AUDIO_CACHE_PREWARM = true
+
         /**
          * 更新配置
          */
@@ -455,23 +462,44 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
         startForegroundService()
         mCurrentText = text
         updateNotification(getString(R.string.systts_state_synthesizing), text)
-        AudioCacheFactory.warmCurrentWindow(applicationContext, mTtsManager)
-
+        // 逐句缓存按章节归档：不再启动整章窗口缓存
+        // AudioCacheFactory.warmCurrentWindow(applicationContext, mTtsManager)
         val runtimeLogText = htmlEscapeForLog(normalizeLogText(text))
-        logI("朗读执行｜收到句子：$runtimeLogText")
-        logI("朗读执行｜查询缓存库：$runtimeLogText")
+        if (ENABLE_READER_AUDIO_CACHE_PREWARM) {
+            AudioCacheFactory.warmCurrentWindow(applicationContext, mTtsManager)
+        }
+        // 已关闭：避免每句额外刷“收到句子”日志
+        // 已关闭：reader_audio_cache 默认关闭，不再每句查询缓存库
 
-        AudioCacheFactory.getCachedAudio(applicationContext, text)?.let { cached ->
+        var cachedAudioForPlayback: AudioCacheFactory.CachedAudio? = null
+        if (ENABLE_READER_AUDIO_CACHE_LOOKUP) {
+            cachedAudioForPlayback = try {
+                kotlinx.coroutines.runBlocking {
+                    kotlinx.coroutines.withTimeoutOrNull(250L) {
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            AudioCacheFactory.getCachedAudio(applicationContext, text)
+                        }
+                    }
+                }
+            } catch (e: Throwable) {
+                logger.warn(e) { "reader audio cache lookup failed" }
+                null
+            }
+        }
+
+        cachedAudioForPlayback?.let { cached ->
             logger.debug { "reader audio cache hit: ${cached.chapterKey}#${cached.index}" }
             if (safeStart(cached.sampleRate)) {
                 UserTtsLogger.logCacheSpeak(
                     text = text,
                     voiceName = cached.voice.ifBlank { "本地缓存" }
                 )
-                logI("朗读执行｜缓存命中｜直接返回缓存音频：$runtimeLogText<br>${htmlEscapeForLog(cached.chapterKey)}#${cached.index}｜${htmlEscapeForLog(cached.voice.ifBlank { "本地缓存" })}")
+                logI("获取成功： $runtimeLogText<br>角色： 本地缓存<br>标签： ${htmlEscapeForLog(cached.voice.ifBlank { "本地缓存" })}<br>音频=${cached.bytes.size} bytes")
                 writeToCallBack(callback, cached.bytes)
                 safeDone()
-                AudioCacheFactory.warmCurrentWindow(applicationContext, mTtsManager)
+                if (ENABLE_READER_AUDIO_CACHE_PREWARM) {
+                    AudioCacheFactory.warmCurrentWindow(applicationContext, mTtsManager)
+                }
                 mNotificationJob = mScope.launch {
                     delay(5000)
                     stopForeground(true)
@@ -480,8 +508,6 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
             }
             return
         }
-
-        logI("朗读执行｜缓存未命中｜实时补请求TTS：$runtimeLogText")
 
         val enabledBgm = request.params.getBoolean(PARAM_BGM_ENABLED, true)
         mTtsManager?.context?.cfg?.bgmEnabled = { enabledBgm }
@@ -495,7 +521,7 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
 
             synthesizerJob = mScope.launch {
                 val manager = mTtsManager
-                val synthesizedAudio = java.io.ByteArrayOutputStream()
+                val synthesizedAudio = if (ENABLE_READER_AUDIO_CACHE) java.io.ByteArrayOutputStream() else null
                 var synthesizedSampleRate = 16000
 
                 if (manager == null) {
@@ -503,7 +529,9 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
                     return@launch
                 }
 
-                manager.synthesize(
+                if (ENABLE_READER_AUDIO_CACHE) com.github.jing332.tts.synthesizer.CacheRequestPayloadRecorder.begin()
+
+                val synthResult = manager.synthesize(
                     params = SystemParams(text = request.charSequenceText.toString()),
                     forceConfigId = cfgId,
                     callback = object : com.github.jing332.tts.synthesizer.SynthesisCallback {
@@ -514,7 +542,7 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
 
                         override fun onSynthesizeAvailable(audio: ByteArray) {
                             if (audio.isEmpty()) return
-                            synthesizedAudio.write(audio)
+                            synthesizedAudio?.write(audio)
 
                             if (!callbackStarted) {
                                 if (!safeStart(16000)) return
@@ -523,16 +551,29 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
                             writeToCallBack(callback, audio)
                         }
                     }
-                ).onSuccess {
+                )
+                val playbackRequest = if (ENABLE_READER_AUDIO_CACHE) {
+                    val recordedRequests = com.github.jing332.tts.synthesizer.CacheRequestPayloadRecorder.end()
+                    recordedRequests.lastOrNull {
+                        it.text.trim() == text.trim()
+                    } ?: recordedRequests.lastOrNull()
+                } else {
+                    null
+                }
+
+                synthResult.onSuccess {
                     logger.debug { "done" }
-                    AudioCacheFactory.savePlaybackAudio(
+                    if (ENABLE_READER_AUDIO_CACHE && synthesizedAudio != null) {
+                        AudioCacheFactory.savePlaybackAudio(
                         context = applicationContext,
                         text = text,
                         sampleRate = synthesizedSampleRate,
-                        bytes = synthesizedAudio.toByteArray()
-                    )
-                    logI("朗读执行｜获取成功｜写入缓存库：$runtimeLogText")
-                    AudioCacheFactory.warmCurrentWindow(applicationContext, manager)
+                        bytes = synthesizedAudio.toByteArray(),
+                            request = playbackRequest
+                        )
+                    }
+                    // logI("获取成功：$runtimeLogText") // 已关闭：避免和详细普通日志重复
+                    // 实时补请求成功后只写入单句缓存，不重复启动整章分析。
                     safeDone()
                 }.onFailure {
                     when (it) {
@@ -1332,22 +1373,112 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
         return userLogVoiceName()
     }
 
+
+    private fun RequestPayload.roleTagForSpeakLog(roleName: String): String {
+        return try {
+            val info = currentTtsLogInfo()
+
+            if (roleName.trim() == "旁白") {
+                return "旁白"
+            }
+
+            val tagOnly = formatTagOnlyForLog(
+                tagName = info.tagName,
+                tag = info.tag
+            )
+
+            tagOnly
+                .removePrefix("【")
+                .removeSuffix("】")
+                .ifBlank { info.tagName }
+                .ifBlank { info.tag }
+                .ifBlank { roleVoiceAssignmentForUserLog(roleName) }
+                .ifBlank { "未知标签" }
+        } catch (_: Throwable) {
+            "未知标签"
+        }
+    }
+
+    private fun boldBlackForLogHtml(value: String): String {
+        return "<font color=\"#000000\"><b>$value</b></font>"
+    }
+
+    private fun formatSpeechTextForLogHtml(cleanText: String): String {
+        val emoEnd = cleanText.indexOf("]]")
+        if (cleanText.startsWith("[[emo:", ignoreCase = true) && emoEnd >= 0) {
+            val prefixEnd = run {
+                val afterEmo = emoEnd + 2
+                if (afterEmo < cleanText.length && cleanText[afterEmo] == '(') {
+                    val descEnd = cleanText.indexOf(")", afterEmo)
+                    if (descEnd >= 0) descEnd + 1 else afterEmo
+                } else {
+                    afterEmo
+                }
+            }
+
+            val prefix = cleanText.substring(0, prefixEnd)
+            val body = cleanText.substring(prefixEnd)
+
+            return if (body.isBlank()) {
+                prefix
+            } else {
+                prefix + boldBlackForLogHtml(body)
+            }
+        }
+
+        return boldBlackForLogHtml(cleanText)
+    }
+
     private fun RequestPayload.userReadableRequestLogHtml(): String {
         val cleanText = htmlEscapeForLog(normalizeLogText(text))
         val roleName = roleNameForUserLog()
-        val assignment = htmlEscapeForLog(roleVoiceAssignmentForUserLog(roleName))
+        val tagLabel = roleTagForSpeakLog(roleName)
 
         return buildString {
-            append("朗读执行｜实时补请求TTS：")
-            append(cleanText)
+            append("请求音频：")
+            append(formatSpeechTextForLogHtml(cleanText))
             append("<br>")
-            append(htmlEscapeForLog(roleName))
-            if (assignment.isNotBlank()) {
+            append("角色：")
+            append(boldBlackForLogHtml(htmlEscapeForLog(roleName)))
+            append("<br>")
+            append("标签：")
+            append(boldBlackForLogHtml(htmlEscapeForLog(tagLabel)))
+        }
+    }
+
+
+
+
+    private fun RequestPayload.userReadableSuccessLogHtml(size: Int, costTime: Long): String {
+        val cleanText = htmlEscapeForLog(normalizeLogText(text))
+        val roleName = roleNameForUserLog()
+        val tagLabel = roleTagForSpeakLog(roleName)
+
+        return buildString {
+            append("获取成功：")
+            append(formatSpeechTextForLogHtml(cleanText))
+            append("<br>")
+            append("角色：")
+            append(boldBlackForLogHtml(htmlEscapeForLog(roleName)))
+            append("<br>")
+            append("标签：")
+            append(boldBlackForLogHtml(htmlEscapeForLog(tagLabel)))
+
+            if (size > 0 || costTime > 0) {
                 append("<br>")
-                append(assignment)
+                append("音频=")
+                append(size)
+                append(" bytes")
+                if (costTime > 0) {
+                    append("｜耗时=")
+                    append(costTime)
+                    append(" ms")
+                }
             }
         }
     }
+
+
 
     private fun normalEvent(e: NormalEvent) {
         when (e) {
@@ -1373,16 +1504,8 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
                 )
             )
 
-            is NormalEvent.ReadAllFromStream -> {
-                if (e.size > 0)
-                    logI(
-                        getString(
-                            R.string.systts_log_success,
-                            e.size.sizeToReadable(),
-                            "${e.costTime}ms"
-                        ) + "<br> ${e.request.text()}"
-                    )
-            }
+            is NormalEvent.ReadAllFromStream ->
+                logI(e.request.userReadableSuccessLogHtml(e.size, e.costTime))
 
             is NormalEvent.HandleStream ->
                 logI(

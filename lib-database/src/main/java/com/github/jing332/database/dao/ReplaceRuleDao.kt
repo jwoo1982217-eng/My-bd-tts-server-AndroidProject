@@ -7,6 +7,7 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Update
+import androidx.room.SkipQueryVerification
 import com.github.jing332.database.entities.AbstractListGroup.Companion.DEFAULT_GROUP_ID
 import com.github.jing332.database.entities.replace.GroupWithReplaceRule
 import com.github.jing332.database.entities.replace.ReplaceRule
@@ -16,6 +17,7 @@ import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.map
 import kotlin.math.min
 
+@SkipQueryVerification
 @Dao
 interface ReplaceRuleDao {
     @get:Query("SELECT * FROM ReplaceRule ORDER BY `order` ASC")
@@ -24,12 +26,14 @@ interface ReplaceRuleDao {
     @get:Query("SELECT * FROM ReplaceRule WHERE isEnabled = '1' ORDER BY `order` ASC")
     val allEnabled: List<ReplaceRule>
 
+    @SkipQueryVerification
     @Query("SELECT * FROM ReplaceRule ORDER BY `order` ASC")
     fun flowAll(): Flow<List<ReplaceRule>>
 
     @get:Query("SELECT count(*) FROM ReplaceRule")
     val count: Int
 
+    @SkipQueryVerification
     @Query("SELECT * FROM ReplaceRule WHERE id = :id")
     fun get(id: Long): ReplaceRule?
 
@@ -48,6 +52,7 @@ interface ReplaceRuleDao {
     }
 
     @Transaction
+    @SkipQueryVerification
     @Query("SELECT * FROM replaceRuleGroup ORDER BY `order` ASC")
     fun internalFlowAllGroupWithReplaceRules(): Flow<List<GroupWithReplaceRule>>
 
@@ -60,9 +65,11 @@ interface ReplaceRuleDao {
             }
         }
 
+    @SkipQueryVerification
     @Query("SELECT * FROM replaceRuleGroup WHERE id = :id")
     fun getGroup(id: Long = DEFAULT_GROUP_ID): ReplaceRuleGroup?
 
+    @SkipQueryVerification
     @Query("SELECT * FROM ReplaceRule WHERE groupId = :groupId ORDER BY `order` ASC")
     fun getListInGroup(groupId: Long = DEFAULT_GROUP_ID): List<ReplaceRule>
 
@@ -81,6 +88,7 @@ interface ReplaceRuleDao {
     @Delete
     fun delete(vararg data: ReplaceRule)
 
+    @SkipQueryVerification
     @Query("DELETE from ReplaceRule WHERE groupId = :groupId")
     fun deleteAllByGroup(groupId: Long)
 
