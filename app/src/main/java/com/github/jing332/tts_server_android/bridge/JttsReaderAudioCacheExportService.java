@@ -5,7 +5,6 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.Intent;
-import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.IBinder;
@@ -148,20 +147,23 @@ public class JttsReaderAudioCacheExportService extends Service {
         if (requestId == null || requestId.trim().length() == 0) {
             requestId = req.getString("taskId", "");
         }
+
         String taskId = req.getString("taskId", requestId);
         String sessionId = req.getString("sessionId", "");
         String callerPackage = req.getString(EXTRA_CALLER_PACKAGE, "");
-        String ackStatus = req.getString("status", "success");
-        if (!"success".equalsIgnoreCase(ackStatus) && !"done".equalsIgnoreCase(ackStatus)) {
-            throw new RuntimeException("ACK status 不是 success/done，拒绝删除缓存: " + ackStatus);
+        String ackStatus = req.getString("status", "");
+
+        if (!"success".equalsIgnoreCase(ackStatus)) {
+            throw new RuntimeException("ACK status 不是 success，拒绝删除缓存: " + ackStatus);
         }
 
         String contentHash = req.getString("contentHash", "");
-        int expectedSegmentCount = req.getInt("segmentCount", -1);
+        int expectedItemCount = req.getInt("itemCount", -1);
         int consumedCount = req.getInt("consumedCount", -1);
-        if (expectedSegmentCount < 0 && consumedCount >= 0) {
-            expectedSegmentCount = consumedCount;
+        if (expectedItemCount < 0 && consumedCount >= 0) {
+            expectedItemCount = consumedCount;
         }
+
         int consumedSeqStart = req.getInt("consumedSeqStart", -1);
         int consumedSeqEnd = req.getInt("consumedSeqEnd", -1);
         String manifestJson = req.getString("manifestJson", "");
@@ -187,9 +189,6 @@ public class JttsReaderAudioCacheExportService extends Service {
         if (manifest == null && requestId != null && requestId.trim().length() > 0) {
             File exportDir = new File(new File(root, "exports"), safeFileName(requestId.trim()));
             File f = new File(exportDir, "manifest.json");
-            if (!f.exists()) {
-                f = new File(new File(new File(root, "exports"), requestId.trim()), "manifest.json");
-            }
             if (f.exists() && f.isFile()) {
                 ackManifestFile = f.getCanonicalFile();
                 ensureUnderReaderCacheRoot(root, ackManifestFile);
@@ -215,33 +214,52 @@ public class JttsReaderAudioCacheExportService extends Service {
             }
         }
 
-        JSONArray segments = manifest.optJSONArray("segments");
-        if (segments == null) segments = manifest.optJSONArray("items");
-        if (segments == null || segments.length() == 0) {
-            throw new RuntimeException("ACK manifest 没有 segments/items，拒绝删除缓存");
+        JSONArray items = manifest.optJSONArray("items");
+        if (items == null || items.length() == 0) {
+            throw new RuntimeException("ACK manifest 没有 items，拒绝删除缓存");
         }
 
-        if (expectedSegmentCount >= 0 && expectedSegmentCount != segments.length()) {
-            throw new RuntimeException("ACK segmentCount 不匹配: request=" + expectedSegmentCount + " manifest=" + segments.length());
+        if (expectedItemCount >= 0 && expectedItemCount != items.length()) {
+            throw new RuntimeException("ACK itemCount 不匹配: request=" + expectedItemCount + " manifest=" + items.length());
         }
 
+        boolean[] seenSeq = new boolean[items.length()];
         int minSeq = Integer.MAX_VALUE;
         int maxSeq = Integer.MIN_VALUE;
-        for (int i = 0; i < segments.length(); i++) {
-            JSONObject seg = segments.optJSONObject(i);
-            if (seg == null) continue;
-            int seq = seg.optInt("seq", seg.optInt("index", i));
+
+        for (int i = 0; i < items.length(); i++) {
+            JSONObject item = items.optJSONObject(i);
+            if (item == null) {
+                throw new RuntimeException("ACK items[" + i + "] 不是对象");
+            }
+
+            int seq = item.optInt("seq", -1);
+            if (seq < 0 || seq >= items.length()) {
+                throw new RuntimeException("ACK items seq 非 0..N-1 连续范围: seq=" + seq + ", count=" + items.length());
+            }
+            if (seenSeq[seq]) {
+                throw new RuntimeException("ACK items seq 重复: " + seq);
+            }
+            seenSeq[seq] = true;
+
             if (seq < minSeq) minSeq = seq;
             if (seq > maxSeq) maxSeq = seq;
         }
+
+        for (int i = 0; i < seenSeq.length; i++) {
+            if (!seenSeq[i]) {
+                throw new RuntimeException("ACK items seq 不连续，缺失: " + i);
+            }
+        }
+
         if (consumedSeqStart >= 0 && minSeq != consumedSeqStart) {
             throw new RuntimeException("ACK consumedSeqStart 不匹配: request=" + consumedSeqStart + " manifestMin=" + minSeq);
         }
         if (consumedSeqEnd >= 0 && maxSeq != consumedSeqEnd) {
             throw new RuntimeException("ACK consumedSeqEnd 不匹配: request=" + consumedSeqEnd + " manifestMax=" + maxSeq);
         }
-        if (consumedCount >= 0 && consumedCount != segments.length()) {
-            throw new RuntimeException("ACK consumedCount 不匹配: request=" + consumedCount + " manifest=" + segments.length());
+        if (consumedCount >= 0 && consumedCount != items.length()) {
+            throw new RuntimeException("ACK consumedCount 不匹配: request=" + consumedCount + " manifest=" + items.length());
         }
 
         JSONArray deletedFiles = new JSONArray();
@@ -249,17 +267,18 @@ public class JttsReaderAudioCacheExportService extends Service {
         int deletedCount = 0;
         long deletedBytes = 0L;
 
-        for (int i = 0; i < segments.length(); i++) {
-            JSONObject seg = segments.optJSONObject(i);
-            if (seg == null) continue;
+        for (int i = 0; i < items.length(); i++) {
+            JSONObject item = items.optJSONObject(i);
+            if (item == null) continue;
 
-            String rel = seg.optString("file", "");
+            String rel = item.optString("file", "");
             if (rel == null || rel.length() == 0) {
-                rel = seg.optString("fileName", "");
+                throw new RuntimeException("ACK item 缺少 file 字段: index=" + i);
             }
-            if (rel == null || rel.length() == 0) {
-                skippedFiles.put("missing-file-field@" + i);
-                continue;
+
+            long expectedLength = item.optLong("length", -1L);
+            if (expectedLength <= 0L) {
+                throw new RuntimeException("ACK item 缺少有效 length 字段: " + rel);
             }
 
             File f = resolveReaderCacheFile(root, rel);
@@ -268,9 +287,8 @@ public class JttsReaderAudioCacheExportService extends Service {
                 continue;
             }
 
-            long expectedLength = seg.optLong("length", seg.optLong("sizeBytes", -1L));
-            if (expectedLength > 0L && f.length() != expectedLength) {
-                throw new RuntimeException("ACK 删除前长度校验失败: " + rel + ", expected=" + expectedLength + ", actual=" + f.length());
+            if (f.length() != expectedLength) {
+                throw new RuntimeException("ACK 删除前 length 校验失败: " + rel + ", expected=" + expectedLength + ", actual=" + f.length());
             }
 
             long len = f.length();
@@ -307,10 +325,10 @@ public class JttsReaderAudioCacheExportService extends Service {
         out.put("sessionId", sessionId);
         out.put("callerPackage", callerPackage);
         out.put("contentHash", manifest.optString("contentHash", contentHash));
-        out.put("segmentCount", segments.length());
+        out.put("itemCount", items.length());
         out.put("consumedSeqStart", minSeq == Integer.MAX_VALUE ? -1 : minSeq);
         out.put("consumedSeqEnd", maxSeq == Integer.MIN_VALUE ? -1 : maxSeq);
-        out.put("consumedCount", segments.length());
+        out.put("consumedCount", items.length());
         out.put("deletedCount", deletedCount);
         out.put("deletedBytes", deletedBytes);
         out.put("deletedFiles", deletedFiles);
@@ -369,81 +387,319 @@ public class JttsReaderAudioCacheExportService extends Service {
     private void exportReaderAudioCache(Bundle req) throws Exception {
         sendResult(req, "running", 0, null, null);
 
-        if (req.getBoolean("useAudioCacheFactory", true)) {
-            String requestId = req.getString(EXTRA_REQUEST_ID, "cache_" + System.currentTimeMillis() + "_" + UUID.randomUUID());
-            String sessionId = req.getString("sessionId", "");
-            String contentHash = req.getString("contentHash", "");
-            String bookName = req.getString("bookName", "");
-            String chapterTitle = req.getString("chapterTitle", "");
-            int chapterIndex = req.getInt("chapterIndex", -1);
-            String authority = getPackageName() + ".jtts.reader.cache.provider";
-
-            JSONObject out = AudioCacheFactory.INSTANCE.exportReaderAudioCacheForBridge(
-                    this,
-                    requestId,
-                    sessionId,
-                    contentHash,
-                    bookName,
-                    chapterTitle,
-                    chapterIndex,
-                    authority
-            );
-
-            sendResult(req, "done", 100, out, null);
-            return;
+        String requestId = req.getString(EXTRA_REQUEST_ID, "");
+        if (requestId == null || requestId.trim().length() == 0) {
+            requestId = req.getString("taskId", "");
+        }
+        if (requestId == null || requestId.trim().length() == 0) {
+            requestId = "cache_" + System.currentTimeMillis() + "_" + UUID.randomUUID();
         }
 
-
-        File root = cacheRoot();
-        File targetDir = pickBestCacheDir(root, req);
-
-        if (targetDir == null || !targetDir.exists()) {
-            throw new RuntimeException("未找到 reader_audio_cache 可导出的缓存目录: " + root.getAbsolutePath());
-        }
-
-        String requestId = req.getString(EXTRA_REQUEST_ID, "cache_" + System.currentTimeMillis() + "_" + UUID.randomUUID());
+        String taskId = req.getString("taskId", requestId);
         String sessionId = req.getString("sessionId", "");
         String contentHash = req.getString("contentHash", "");
         String bookName = req.getString("bookName", "");
         String chapterTitle = req.getString("chapterTitle", "");
         int chapterIndex = req.getInt("chapterIndex", -1);
 
+        int sampleRate = req.getInt("sampleRate", 24000);
+        int channels = req.getInt("channels", 1);
+        String pcmFormat = req.getString("pcmFormat", "PCM_16BIT");
+
+        File root = cacheRoot().getCanonicalFile();
+        File targetDir = pickCacheDirForPcmExport(root, req);
+
+        if (targetDir == null || !targetDir.exists() || !targetDir.isDirectory()) {
+            throw new RuntimeException("未找到当前章节 reader_audio_cache PCM 缓存目录: " + root.getAbsolutePath());
+        }
+
+        JSONArray items = buildPcmItems(root, targetDir);
+        if (items.length() == 0) {
+            throw new RuntimeException("当前章节 reader_audio_cache 没有可导出的 PCM 分片: " + targetDir.getAbsolutePath());
+        }
+
         JSONObject out = new JSONObject();
         out.put("method", "exportReaderAudioCache");
         out.put("status", "done");
         out.put("requestId", requestId);
+        out.put("taskId", taskId);
         out.put("sessionId", sessionId);
         out.put("contentHash", contentHash);
         out.put("bookName", bookName);
         out.put("chapterTitle", chapterTitle);
         out.put("chapterIndex", chapterIndex);
-        out.put("cacheDir", targetDir.getName());
+        out.put("sampleRate", sampleRate);
+        out.put("channels", channels);
+        out.put("pcmFormat", pcmFormat);
+        out.put("cacheDir", relativePath(root, targetDir));
+        out.put("itemCount", items.length());
         out.put("createdAt", System.currentTimeMillis());
+        out.put("items", items);
 
-        File existingManifest = new File(targetDir, "manifest.json");
-        if (existingManifest.exists() && existingManifest.isFile()) {
-            try {
-                out.put("sourceManifestPreview", readText(existingManifest, 20000));
-                out.put("sourceManifestUri", uriForFile(root, existingManifest).toString());
-            } catch (Throwable ignored) {}
-        }
+        // 不再生成 reader_audio_cache/exports。
+        // J.TTS 只在当前章节缓存目录写 manifest.json，里面只列 PCM items。
+        File exportManifest = new File(targetDir, "manifest.json");
+        Uri manifestUri = uriForFile(root, exportManifest);
+        out.put("manifestUri", manifestUri.toString());
+        out.put("manifestFile", relativePath(root, exportManifest));
 
-        JSONArray segments = buildSegments(root, targetDir);
-        out.put("segmentCount", segments.length());
-        out.put("segments", segments);
-
-        File exportDir = new File(root, "exports");
-        if (!exportDir.exists()) exportDir.mkdirs();
-
-        File exportManifest = new File(exportDir, safeFileName("reader_audio_cache_export_" + requestId + ".json"));
         writeText(exportManifest, out.toString(2));
 
-        out.put("manifestUri", uriForFile(root, exportManifest).toString());
+        grantReadUri(req, manifestUri);
+        for (int i = 0; i < items.length(); i++) {
+            JSONObject item = items.optJSONObject(i);
+            if (item == null) continue;
+            String uri = item.optString("uri", "");
+            if (uri != null && uri.length() > 0) {
+                grantReadUri(req, Uri.parse(uri));
+            }
+        }
 
-        Log.i(TAG, "reader audio cache export done dir=" + targetDir.getAbsolutePath() +
-                " segments=" + segments.length());
+        Log.i(TAG, "reader audio cache PCM manifest export done dir=" + targetDir.getAbsolutePath()
+                + " items=" + items.length()
+                + " requestId=" + requestId);
 
         sendResult(req, "done", 100, out, null);
+    }
+
+    private File pickCacheDirForPcmExport(File root, Bundle req) throws Exception {
+        String explicit = req.getString("cacheDirName", "");
+        if (explicit != null && explicit.trim().length() > 0) {
+            File f = resolveReaderCacheFile(root, explicit.trim());
+            if (f.exists() && f.isDirectory()) return f;
+            throw new RuntimeException("指定的 cacheDirName 不存在或不是目录: " + explicit);
+        }
+
+        String contentHash = req.getString("contentHash", "");
+        String bookName = req.getString("bookName", "");
+        String chapterTitle = req.getString("chapterTitle", "");
+        int chapterIndex = req.getInt("chapterIndex", -1);
+
+        boolean hasStrongKey =
+                (contentHash != null && contentHash.trim().length() > 0)
+                        || (bookName != null && bookName.trim().length() > 0)
+                        || (chapterTitle != null && chapterTitle.trim().length() > 0)
+                        || chapterIndex >= 0;
+
+        if (!hasStrongKey) {
+            throw new RuntimeException("EXPORT_READER_AUDIO_CACHE 缺少 contentHash/bookName/chapterTitle/chapterIndex/cacheDirName，拒绝盲选旧缓存，避免混入其他书或旧章节");
+        }
+
+        ArrayList<File> candidates = new ArrayList<>();
+        collectCandidateDirs(root, candidates, 0, 5);
+
+        File best = null;
+        int bestScore = -1;
+        long bestModified = -1L;
+
+        for (File c : candidates) {
+            if (isUnderExports(root, c)) continue;
+
+            int score = scoreCacheDirForRequest(c, req);
+            if (score < 0) continue;
+
+            long modified = lastModifiedDeep(c);
+            if (score > bestScore || (score == bestScore && modified > bestModified)) {
+                best = c;
+                bestScore = score;
+                bestModified = modified;
+            }
+        }
+
+        if (best == null) {
+            throw new RuntimeException("没有找到匹配当前书/章节的 PCM 缓存目录，拒绝导出旧缓存。contentHash="
+                    + contentHash + ", bookName=" + bookName + ", chapterTitle=" + chapterTitle + ", chapterIndex=" + chapterIndex);
+        }
+
+        return best;
+    }
+
+    private int scoreCacheDirForRequest(File dir, Bundle req) {
+        try {
+            String contentHash = req.getString("contentHash", "");
+            String bookName = req.getString("bookName", "");
+            String chapterTitle = req.getString("chapterTitle", "");
+            int chapterIndex = req.getInt("chapterIndex", -1);
+
+            int score = 0;
+            String dirName = dir.getName();
+
+            JSONObject m = readOptionalManifest(dir);
+
+            if (contentHash != null && contentHash.trim().length() > 0) {
+                String h = contentHash.trim();
+                if (dirName.contains(h)) score += 50;
+
+                if (m != null) {
+                    String mh = m.optString("contentHash", "");
+                    if (mh.length() > 0) {
+                        if (!h.equals(mh)) return -1;
+                        score += 100;
+                    }
+                }
+            }
+
+            if (chapterIndex >= 0 && m != null && m.has("chapterIndex")) {
+                int got = m.optInt("chapterIndex", Integer.MIN_VALUE);
+                if (got != chapterIndex) return -1;
+                score += 30;
+            }
+
+            if (bookName != null && bookName.trim().length() > 0 && m != null) {
+                String got = m.optString("bookName", "");
+                if (got.length() > 0) {
+                    if (!bookName.trim().equals(got)) return -1;
+                    score += 20;
+                }
+            }
+
+            if (chapterTitle != null && chapterTitle.trim().length() > 0 && m != null) {
+                String got = m.optString("chapterTitle", "");
+                if (got.length() > 0) {
+                    if (!chapterTitle.trim().equals(got)) return -1;
+                    score += 20;
+                }
+            }
+
+            if (score == 0) {
+                return -1;
+            }
+
+            return score;
+        } catch (Throwable e) {
+            return -1;
+        }
+    }
+
+    private JSONObject readOptionalManifest(File dir) {
+        try {
+            File m = new File(dir, "manifest.json");
+            if (m.exists() && m.isFile()) {
+                return new JSONObject(readText(m, 1024 * 1024));
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    private boolean hasPcmLikeFiles(File dir) {
+        ArrayList<File> files = new ArrayList<>();
+        collectPcmCandidateFiles(dir, files);
+        return !files.isEmpty();
+    }
+
+    private JSONArray buildPcmItems(File root, File dir) throws Exception {
+        ArrayList<File> files = new ArrayList<>();
+        collectPcmCandidateFiles(dir, files);
+
+        Collections.sort(files, new Comparator<File>() {
+            @Override
+            public int compare(File a, File b) {
+                long ma = a.lastModified();
+                long mb = b.lastModified();
+                if (ma != mb) return Long.compare(ma, mb);
+
+                int ia = leadingIndex(a.getName());
+                int ib = leadingIndex(b.getName());
+                if (ia != ib) return Integer.compare(ia, ib);
+
+                return a.getName().compareTo(b.getName());
+            }
+        });
+
+        JSONArray arr = new JSONArray();
+
+        for (int i = 0; i < files.size(); i++) {
+            File f = files.get(i);
+            Uri uri = uriForFile(root, f);
+            String rel = relativePath(root, f);
+
+            JSONObject item = new JSONObject();
+            item.put("seq", i);
+            item.put("file", rel);
+            item.put("fileName", f.getName());
+            item.put("uri", uri.toString());
+            item.put("length", f.length());
+            item.put("lastModified", f.lastModified());
+
+            arr.put(item);
+        }
+
+        return arr;
+    }
+
+    private void collectPcmCandidateFiles(File dir, ArrayList<File> out) {
+        File[] files = dir.listFiles();
+        if (files == null) return;
+
+        for (File f : files) {
+            if (f.isDirectory()) {
+                if (!"exports".equals(f.getName())) {
+                    collectPcmCandidateFiles(f, out);
+                }
+                continue;
+            }
+
+            String n = f.getName().toLowerCase();
+
+            if (n.equals("manifest.json")) continue;
+            if (n.startsWith("reader_audio_cache_export_")) continue;
+            if (n.endsWith(".json") || n.endsWith(".tmp") || n.endsWith(".lock")) continue;
+
+            // J.TTS 端只导出 PCM 分片，不导出 J.TTS 自己拼出来的整章 WAV/MP3/AAC。
+            if (n.endsWith(".wav") || n.endsWith(".mp3") || n.endsWith(".m4a")
+                    || n.endsWith(".aac") || n.endsWith(".ogg")) {
+                continue;
+            }
+
+            if (f.length() <= 128) continue;
+
+            // 当前缓存分片可能没有扩展名；也兼容 .pcm/.raw。
+            if (n.endsWith(".pcm") || n.endsWith(".raw") || n.indexOf('.') < 0) {
+                out.add(f);
+            }
+        }
+    }
+
+    private boolean isUnderExports(File root, File f) {
+        try {
+            File exportDir = new File(root, "exports").getCanonicalFile();
+            File target = f.getCanonicalFile();
+            String ep = exportDir.getAbsolutePath();
+            String tp = target.getAbsolutePath();
+            return tp.equals(ep) || tp.startsWith(ep + File.separator);
+        } catch (Throwable e) {
+            return false;
+        }
+    }
+
+    private String relativePath(File root, File file) throws Exception {
+        File r = root.getCanonicalFile();
+        File f = file.getCanonicalFile();
+        ensureUnderReaderCacheRoot(r, f);
+
+        String rootPath = r.getAbsolutePath();
+        String filePath = f.getAbsolutePath();
+
+        if (filePath.equals(rootPath)) return "";
+        return filePath.substring(rootPath.length() + 1).replace(File.separatorChar, '/');
+    }
+
+    private void grantReadUri(Bundle req, Uri uri) {
+        try {
+            String callerPackage = req.getString(EXTRA_CALLER_PACKAGE, "");
+            if (callerPackage == null || callerPackage.trim().length() == 0) {
+                callerPackage = req.getString("readerPackage", "");
+            }
+            if (callerPackage == null || callerPackage.trim().length() == 0) {
+                callerPackage = req.getString("packageName", "");
+            }
+            if (callerPackage != null && callerPackage.trim().length() > 0) {
+                grantUriPermission(callerPackage.trim(), uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "grant read uri failed: " + uri, t);
+        }
     }
 
     private File pickBestCacheDir(File root, Bundle req) {
@@ -498,60 +754,9 @@ public class JttsReaderAudioCacheExportService extends Service {
         return false;
     }
 
-    private JSONArray buildSegments(File root, File dir) throws Exception {
-        ArrayList<File> files = new ArrayList<>();
-        collectAudioFiles(dir, files);
+    
 
-        Collections.sort(files, new Comparator<File>() {
-            @Override
-            public int compare(File a, File b) {
-                int ia = leadingIndex(a.getName());
-                int ib = leadingIndex(b.getName());
-                if (ia != ib) return Integer.compare(ia, ib);
-                return a.getName().compareTo(b.getName());
-            }
-        });
-
-        JSONArray arr = new JSONArray();
-        int i = 0;
-        for (File f : files) {
-            JSONObject item = new JSONObject();
-            int index = leadingIndex(f.getName());
-            if (index < 0) index = i;
-
-            item.put("index", index);
-            item.put("order", i);
-            item.put("fileName", f.getName());
-            item.put("sizeBytes", f.length());
-            item.put("audioUri", uriForFile(root, f).toString());
-            item.put("audioMimeType", guessMime(f));
-            item.put("durationMs", readDurationMs(f));
-            item.put("lastModified", f.lastModified());
-
-            arr.put(item);
-            i++;
-        }
-        return arr;
-    }
-
-    private void collectAudioFiles(File dir, ArrayList<File> out) {
-        File[] files = dir.listFiles();
-        if (files == null) return;
-
-        for (File f : files) {
-            if (f.isDirectory()) {
-                if (!"exports".equals(f.getName())) collectAudioFiles(f, out);
-                continue;
-            }
-
-            String n = f.getName().toLowerCase();
-            if (n.equals("manifest.json")) continue;
-            if (n.startsWith("reader_audio_cache_export_")) continue;
-            if (n.endsWith(".json") || n.endsWith(".tmp") || n.endsWith(".lock")) continue;
-            if (f.length() <= 128) continue;
-            out.add(f);
-        }
-    }
+    
 
     private int leadingIndex(String name) {
         try {
@@ -564,32 +769,9 @@ public class JttsReaderAudioCacheExportService extends Service {
         }
     }
 
-    private long readDurationMs(File f) {
-        MediaMetadataRetriever r = null;
-        try {
-            r = new MediaMetadataRetriever();
-            r.setDataSource(f.getAbsolutePath());
-            String d = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
-            if (d == null || d.length() == 0) return -1;
-            return Long.parseLong(d);
-        } catch (Throwable e) {
-            return -1;
-        } finally {
-            try {
-                if (r != null) r.release();
-            } catch (Throwable ignored) {}
-        }
-    }
+    
 
-    private String guessMime(File f) {
-        String n = f.getName().toLowerCase();
-        if (n.endsWith(".mp3")) return "audio/mpeg";
-        if (n.endsWith(".m4a") || n.endsWith(".aac")) return "audio/mp4";
-        if (n.endsWith(".ogg")) return "audio/ogg";
-        if (n.endsWith(".wav")) return "audio/wav";
-        // 当前 J.TTS reader_audio_cache 无扩展名时，通常仍按音频流处理；先给 wav 兜底。
-        return "audio/wav";
-    }
+    
 
     private Uri uriForFile(File root, File file) throws Exception {
         File r = root.getCanonicalFile();

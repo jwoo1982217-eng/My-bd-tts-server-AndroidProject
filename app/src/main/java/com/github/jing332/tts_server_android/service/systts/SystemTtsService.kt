@@ -466,7 +466,13 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
         // AudioCacheFactory.warmCurrentWindow(applicationContext, mTtsManager)
         val runtimeLogText = htmlEscapeForLog(normalizeLogText(text))
         if (ENABLE_READER_AUDIO_CACHE_PREWARM) {
-            AudioCacheFactory.warmCurrentWindow(applicationContext, mTtsManager)
+
+            // 暂停 J.TTS 端 nextText/window 预热：
+
+            // 预热不能绕过朗读规则/角色管理/配置列表选音。
+
+            // PCM 缓存、chapter context、reading pointer 仍然保留。
+
         }
         // 已关闭：避免每句额外刷“收到句子”日志
         // 已关闭：reader_audio_cache 默认关闭，不再每句查询缓存库
@@ -498,7 +504,8 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
                 writeToCallBack(callback, cached.bytes)
                 safeDone()
                 if (ENABLE_READER_AUDIO_CACHE_PREWARM) {
-                    AudioCacheFactory.warmCurrentWindow(applicationContext, mTtsManager)
+                    // 已停用：J.TTS 端 nextText/window 预热不能绕过朗读规则/角色管理选音
+                    // AudioCacheFactory.warmCurrentWindow(applicationContext, mTtsManager)
                 }
                 mNotificationJob = mScope.launch {
                     delay(5000)
@@ -531,8 +538,35 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
 
                 if (ENABLE_READER_AUDIO_CACHE) com.github.jing332.tts.synthesizer.CacheRequestPayloadRecorder.begin()
 
-                val synthResult = manager.synthesize(
-                    params = SystemParams(text = request.charSequenceText.toString()),
+                val speakTextForSynthesis = request.charSequenceText.toString()
+
+                val prefetchedAudio = if (false && ENABLE_READER_AUDIO_CACHE_PREWARM) {
+                    AudioCacheFactory.consumePrefetchedAudio(
+                        context = applicationContext,
+                        speakText = speakTextForSynthesis
+                    )
+                } else {
+                    null
+                }
+
+                var prefetchedStartOk = true
+                if (prefetchedAudio != null) {
+                    synthesizedSampleRate = prefetchedAudio.sampleRate.coerceAtLeast(8000)
+                    prefetchedStartOk = safeStart(synthesizedSampleRate)
+                    if (prefetchedStartOk) {
+                        synthesizedAudio?.write(prefetchedAudio.bytes)
+                        writeToCallBack(callback, prefetchedAudio.bytes)
+                    }
+                }
+
+                val synthResult = if (prefetchedAudio != null) {
+                    if (prefetchedStartOk) {
+                        runCatching { Unit }
+                    } else {
+                        runCatching { throw RuntimeException("prefetched audio safeStart failed") }
+                    }
+                } else manager.synthesize(
+                    params = SystemParams(text = speakTextForSynthesis),
                     forceConfigId = cfgId,
                     callback = object : com.github.jing332.tts.synthesizer.SynthesisCallback {
                         override fun onSynthesizeStart(sampleRate: Int) {
@@ -978,6 +1012,7 @@ class SystemTtsService : TextToSpeechService(), IEventDispatcher {
                                         it.name.equals("characterRecords.json", ignoreCase = true) ||
                                                 it.name.equals("characterRecaords.json", ignoreCase = true)
                                         )
+
                     }
                     .filter { it.length() > 2L }
                     .maxByOrNull { it.lastModified() }

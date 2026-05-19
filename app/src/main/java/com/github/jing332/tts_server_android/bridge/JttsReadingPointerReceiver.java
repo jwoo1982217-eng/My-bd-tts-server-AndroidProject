@@ -99,12 +99,57 @@ public class JttsReadingPointerReceiver extends BroadcastReceiver {
             ptr.put("startOffset", req.containsKey("startOffset") ? req.getInt("startOffset", -1) : -1);
             ptr.put("endOffset", req.containsKey("endOffset") ? req.getInt("endOffset", -1) : -1);
             ptr.put("chapterIndex", req.containsKey("chapterIndex") ? req.getInt("chapterIndex", -1) : -1);
+
+            putStringIfPresent(req, ptr, "bookName");
+            putStringIfPresent(req, ptr, "chapterTitle");
+            putStringIfPresent(req, ptr, "originalParagraphText");
+            putStringIfPresent(req, ptr, "beforeText");
+            putStringIfPresent(req, ptr, "afterText");
+            putIntIfPresent(req, ptr, "originalParagraphStartOffset");
+            putIntIfPresent(req, ptr, "originalParagraphEndOffset");
+
+            putStringIfPresent(req, ptr, "nextText");
+            putStringIfPresent(req, ptr, "nextSegmentText");
+            putStringIfPresent(req, ptr, "nextCurrentText");
+            putStringIfPresent(req, ptr, "nextParagraph");
+            putStringIfPresent(req, ptr, "nextSegmentId");
+            putStringIfPresent(req, ptr, "nextUtteranceId");
+
+            putIntIfPresent(req, ptr, "nextIndex");
+            putIntIfPresent(req, ptr, "nextStartOffset");
+            putIntIfPresent(req, ptr, "nextEndOffset");
+
+            String nextPointerJson = req.getString("nextPointerJson", "");
+            if (nextPointerJson != null && nextPointerJson.trim().length() > 0) {
+                try {
+                    ptr.put("nextPointer", new JSONObject(nextPointerJson));
+                } catch (Throwable ignored) {
+                }
+            }
+
             ptr.put("updatedAt", System.currentTimeMillis());
         }
 
         if (!ptr.has("type")) ptr.put("type", "current_pointer");
         if (!ptr.has("updatedAt")) ptr.put("updatedAt", System.currentTimeMillis());
         return ptr;
+    }
+
+    private void putStringIfPresent(Bundle req, JSONObject obj, String key) throws Exception {
+        if (req == null || obj == null || key == null) return;
+        if (!req.containsKey(key)) return;
+
+        String value = req.getString(key, "");
+        if (value != null && value.trim().length() > 0) {
+            obj.put(key, value);
+        }
+    }
+
+    private void putIntIfPresent(Bundle req, JSONObject obj, String key) throws Exception {
+        if (req == null || obj == null || key == null) return;
+        if (!req.containsKey(key)) return;
+
+        obj.put(key, req.getInt(key, -1));
     }
 
     private static final String[] KNOWN_FILES = new String[]{

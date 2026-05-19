@@ -273,7 +273,7 @@
 
         <provider
             android:name="com.github.jing332.tts_server_android.bridge.JttsExportContentProvider"
-            android:authorities="com.github.jing332.tts_server_android.jtts.export.provider"
+            android:authorities="${applicationId}.jtts.export.provider"
             android:exported="false"
             android:grantUriPermissions="true" />
 

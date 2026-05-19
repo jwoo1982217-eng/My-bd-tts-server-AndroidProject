@@ -30,6 +30,7 @@ val dbm: DatabaseManager by lazy {
 
 
 @SkipQueryVerification
+
 @Database(
     version = 30,
     entities = [

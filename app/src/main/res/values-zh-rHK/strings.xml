@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <string name="app_name">J.TTS Server</string>
-    <string name="app_name_dev">J.TTS Server</string>
+    <string name="app_name">J.TTS Bridge</string>
+    <string name="app_name_dev">J.TTS Bridge</string>
     <string name="app_switch">开关</string>
     <string name="help">帮助</string>
     <string name="warning">警告</string>

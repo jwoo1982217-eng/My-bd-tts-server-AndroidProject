@@ -535,6 +535,39 @@ class TextProcessor : ITextProcessor {
         textReplacer.load()
     }
 
+
+    private val jttsSplitBridgePrefixRegex = Regex(
+        "^\\s*(\\[\\[(?:emo|emotion|mimo_ctx|mimo_context|mimo_director|mimo_nl|mimo_tag|mimo_mode)[^\\]]*\\]\\]\\s*)+",
+        RegexOption.IGNORE_CASE
+    )
+
+    private val jttsSingleBridgePrefixRegex = Regex(
+        "^\\s*\\[\\[(?:emo|emotion|mimo_ctx|mimo_context|mimo_director|mimo_nl|mimo_tag|mimo_mode)[^\\]]*\\]\\]",
+        RegexOption.IGNORE_CASE
+    )
+
+    private fun jttsExtractSplitBridgePrefix(text: String): String {
+        val match = jttsSplitBridgePrefixRegex.find(text) ?: return ""
+        return match.value.trim()
+    }
+
+    private fun jttsCopyBridgePrefixToSplitParts(originalText: String, parts: List<String>): List<String> {
+        val prefix = jttsExtractSplitBridgePrefix(originalText)
+        if (prefix.isBlank() || parts.isEmpty()) return parts
+
+        return parts.map { part ->
+            val trimmed = part.trimStart()
+            if (trimmed.isBlank()) {
+                part
+            } else if (jttsSingleBridgePrefixRegex.containsMatchIn(trimmed)) {
+                part
+            } else {
+                prefix + trimmed
+            }
+        }
+    }
+
+
     private fun splitText(text: String): List<String> {
         val clean = text.trim()
         if (clean.isBlank()) return emptyList()
@@ -707,7 +740,7 @@ class TextProcessor : ITextProcessor {
         }
 
         fun splitAndAdd(text: String, config: TtsConfiguration) {
-            splitText(text).forEach { segment ->
+            jttsCopyBridgePrefixToSplitParts(text, splitText(text)).forEach { segment ->
                 var checkText = segment.trim()
 
                 // 去掉开头的情绪/语气提示词，例如 [开心]、【低声】、（旁白）、(生气)
